@@ -14,6 +14,8 @@ import {
   ArrowRight,
   ArrowLeft,
   Loader2,
+  Users,
+  Key,
 } from 'lucide-react';
 import { api, ApiClientError } from '@/lib/api-client';
 import { useAuth } from '@/lib/auth-context';
@@ -26,8 +28,10 @@ function LoginForm() {
   const { user, refreshUser } = useAuth();
 
   const [step, setStep] = useState<AuthStep>('credentials');
+  const [loginMode, setLoginMode] = useState<'participant' | 'staff'>('participant');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [teamCode, setTeamCode] = useState('');
   const [totpCode, setTotpCode] = useState('');
   const [token, setToken] = useState(''); // challenge or enrollment token
   const [mfaSecret, setMfaSecret] = useState('');
@@ -54,11 +58,22 @@ function LoginForm() {
   const handleCredentialsSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
+
+    if (loginMode === 'participant' && !teamCode.trim()) {
+      setError('Please enter your Team Access Code provided by your event organizer.');
+      return;
+    }
+
     setIsSubmitting(true);
 
     try {
       const redirectParam = searchParams.get('redirect') || searchParams.get('return_to') || undefined;
-      const response = await api.login(email.trim(), password, redirectParam);
+      const response = await api.login(
+        email.trim(),
+        password,
+        redirectParam,
+        loginMode === 'participant' ? teamCode.trim().toUpperCase() : undefined
+      );
 
       if (response.mfa_required) {
         if (!response.enrolled && response.enrollment_token) {
@@ -144,7 +159,7 @@ function LoginForm() {
 
       <div className="w-full max-w-md relative z-10">
         {/* Branding Header */}
-        <div className="flex flex-col items-center text-center mb-8">
+        <div className="flex flex-col items-center text-center mb-6">
           <div className="w-12 h-12 rounded-xl bg-primary/10 border border-primary/20 flex items-center justify-center text-primary mb-3 shadow-lg shadow-primary/10">
             <Shield className="w-6 h-6" />
           </div>
@@ -152,17 +167,54 @@ function LoginForm() {
             SCORVA
           </h1>
           <p className="text-xs uppercase tracking-widest text-text-muted mt-1 font-semibold">
-            Super Admin Control Center
+            Hackathon Platform & Evaluation Gateway
           </p>
         </div>
 
         {/* Card Container */}
         <div className="bg-surface border border-surface-border rounded-xl shadow-surface-elevated p-6 sm:p-8 backdrop-blur-sm">
+          {/* Mode Tabs: Participant vs Staff */}
+          <div className="grid grid-cols-2 gap-1 p-1 bg-surface-elevated border border-surface-border rounded-lg mb-6">
+            <button
+              type="button"
+              onClick={() => {
+                setLoginMode('participant');
+                setError(null);
+              }}
+              className={`py-2 px-3 rounded-md text-xs font-semibold flex items-center justify-center gap-1.5 transition-all ${
+                loginMode === 'participant'
+                  ? 'bg-primary text-white shadow-xs'
+                  : 'text-text-muted hover:text-text-primary'
+              }`}
+            >
+              <Users className="w-3.5 h-3.5" />
+              <span>Participant Access</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setLoginMode('staff');
+                setError(null);
+              }}
+              className={`py-2 px-3 rounded-md text-xs font-semibold flex items-center justify-center gap-1.5 transition-all ${
+                loginMode === 'staff'
+                  ? 'bg-primary text-white shadow-xs'
+                  : 'text-text-muted hover:text-text-primary'
+              }`}
+            >
+              <Shield className="w-3.5 h-3.5" />
+              <span>Organizer / Staff</span>
+            </button>
+          </div>
+
           {/* Error Banner */}
           {error && (
             <div className="mb-6 p-3.5 bg-status-error/10 border border-status-error/20 rounded-lg flex items-start gap-3 text-status-error text-xs leading-relaxed animate-in fade-in duration-200">
               <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
-              <span>{error}</span>
+              <div className="space-y-0.5">
+                <span className="font-semibold block">Authentication Notice</span>
+                <span>{error}</span>
+              </div>
             </div>
           )}
 
@@ -171,7 +223,7 @@ function LoginForm() {
             <form onSubmit={handleCredentialsSubmit} className="space-y-4">
               <div>
                 <label className="block text-xs font-medium text-text-secondary mb-1.5">
-                  Admin Email Address
+                  {loginMode === 'participant' ? 'Participant Email Address' : 'Staff Email Address'}
                 </label>
                 <div className="relative">
                   <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-text-muted">
@@ -182,7 +234,7 @@ function LoginForm() {
                     required
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}
-                    placeholder="admin@scorva.io"
+                    placeholder={loginMode === 'participant' ? 'participant@scorva.io' : 'admin@scorva.io'}
                     className="w-full pl-9 pr-3.5 py-2.5 bg-surface-elevated border border-surface-border rounded-lg text-sm text-text-primary placeholder:text-text-muted/60 focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary transition-colors"
                   />
                 </div>
@@ -207,6 +259,31 @@ function LoginForm() {
                 </div>
               </div>
 
+              {/* Team Code Input for Participants */}
+              {loginMode === 'participant' && (
+                <div className="p-3 bg-surface-elevated/70 border border-surface-border rounded-lg space-y-1.5">
+                  <label className="block text-xs font-semibold text-text-primary">
+                    Team Access / Join Code <span className="text-status-danger">*</span>
+                  </label>
+                  <div className="relative">
+                    <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-text-muted">
+                      <Key className="w-4 h-4" />
+                    </div>
+                    <input
+                      type="text"
+                      required
+                      value={teamCode}
+                      onChange={(e) => setTeamCode(e.target.value.toUpperCase())}
+                      placeholder="e.g. 4B7B5F8A9C12"
+                      className="w-full pl-9 pr-3.5 py-2 bg-surface border border-surface-border rounded-lg text-sm font-mono uppercase tracking-widest text-text-primary placeholder:tracking-normal placeholder:font-sans placeholder:text-text-muted/60 focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary transition-colors"
+                    />
+                  </div>
+                  <p className="text-[11px] text-text-muted leading-tight">
+                    Enter the code provided by your event organizer. Invalid codes will deny access to the event dashboard.
+                  </p>
+                </div>
+              )}
+
               <div className="pt-2">
                 <button
                   type="submit"
@@ -216,11 +293,11 @@ function LoginForm() {
                   {isSubmitting ? (
                     <>
                       <Loader2 className="w-4 h-4 animate-spin" />
-                      <span>Authenticating...</span>
+                      <span>{loginMode === 'participant' ? 'Verifying Code & Authenticating...' : 'Authenticating...'}</span>
                     </>
                   ) : (
                     <>
-                      <span>Sign In</span>
+                      <span>{loginMode === 'participant' ? 'Enter Event Dashboard' : 'Sign In'}</span>
                       <ArrowRight className="w-4 h-4" />
                     </>
                   )}
@@ -230,12 +307,13 @@ function LoginForm() {
               {/* Development presets helper */}
               <div className="pt-3 border-t border-surface-border">
                 <div className="text-[11px] text-text-muted mb-2 font-medium">
-                  Development Quick-Login Personas (Password: <code className="text-primary font-mono font-semibold">Password123!</code>):
+                  Quick Login Accounts (Password: <code className="text-primary font-mono font-semibold">Password123!</code>):
                 </div>
                 <div className="grid grid-cols-2 gap-2 text-xs">
                   <button
                     type="button"
                     onClick={() => {
+                      setLoginMode('staff');
                       setEmail('admin@scorva.io');
                       setPassword('Password123!');
                       setError(null);
@@ -243,11 +321,12 @@ function LoginForm() {
                     className="p-2 text-left bg-surface-elevated hover:bg-surface-border/50 border border-surface-border rounded-lg transition-colors cursor-pointer"
                   >
                     <div className="font-medium text-text-primary truncate">admin@scorva.io</div>
-                    <div className="text-[10px] text-primary mt-0.5">Super Admin (Direct Login)</div>
+                    <div className="text-[10px] text-primary mt-0.5">Super Admin (Staff)</div>
                   </button>
                   <button
                     type="button"
                     onClick={() => {
+                      setLoginMode('staff');
                       setEmail('organizer@scorva.io');
                       setPassword('Password123!');
                       setError(null);
@@ -255,11 +334,12 @@ function LoginForm() {
                     className="p-2 text-left bg-surface-elevated hover:bg-surface-border/50 border border-surface-border rounded-lg transition-colors cursor-pointer"
                   >
                     <div className="font-medium text-text-primary truncate">organizer@scorva.io</div>
-                    <div className="text-[10px] text-text-muted mt-0.5">Tenant Organizer</div>
+                    <div className="text-[10px] text-text-muted mt-0.5">Organizer (Staff)</div>
                   </button>
                   <button
                     type="button"
                     onClick={() => {
+                      setLoginMode('staff');
                       setEmail('judge@scorva.io');
                       setPassword('Password123!');
                       setError(null);
@@ -267,11 +347,12 @@ function LoginForm() {
                     className="p-2 text-left bg-surface-elevated hover:bg-surface-border/50 border border-surface-border rounded-lg transition-colors cursor-pointer"
                   >
                     <div className="font-medium text-text-primary truncate">judge@scorva.io</div>
-                    <div className="text-[10px] text-text-muted mt-0.5">Assigned Judge</div>
+                    <div className="text-[10px] text-text-muted mt-0.5">Judge (Staff)</div>
                   </button>
                   <button
                     type="button"
                     onClick={() => {
+                      setLoginMode('participant');
                       setEmail('participant@scorva.io');
                       setPassword('Password123!');
                       setError(null);
@@ -279,14 +360,14 @@ function LoginForm() {
                     className="p-2 text-left bg-surface-elevated hover:bg-surface-border/50 border border-surface-border rounded-lg transition-colors cursor-pointer"
                   >
                     <div className="font-medium text-text-primary truncate">participant@scorva.io</div>
-                    <div className="text-[10px] text-text-muted mt-0.5">Team Participant</div>
+                    <div className="text-[10px] text-text-muted mt-0.5">Participant (Code Required)</div>
                   </button>
                 </div>
               </div>
 
               <div className="pt-2 text-center">
                 <p className="text-[11px] text-text-muted">
-                  Scorva platform authentication gateway. Direct Super Admin access enabled for development.
+                  Scorva hackathon platform gateway. Invalid team access codes will be denied entry.
                 </p>
               </div>
             </form>

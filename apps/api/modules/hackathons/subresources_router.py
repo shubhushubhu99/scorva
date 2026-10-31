@@ -15,6 +15,8 @@ from apps.api.dependencies import (
 from apps.api.modules.users.models import User
 from apps.api.modules.hackathons.subresources_schemas import (
     AddCriterionRequest,
+    AddTeamParticipantRequest,
+    AddTeamParticipantResponse,
     AssignJudgeRequest,
     CreateRubricRequest,
     CreateSubmissionRequest,
@@ -172,6 +174,32 @@ async def join_team(
         db=db,
         org_id=tenant.organization.id,
         hackathon_id=hackathon_id,
+        data=payload,
+        actor_user_id=tenant.user.id,
+        actor_email=tenant.user.email,
+        actor_role=tenant.membership.role.value,
+        ip_address=ip,
+        user_agent=ua,
+        correlation_id=corr_id,
+    )
+
+
+@router.post("/teams/{team_id}/participants", response_model=AddTeamParticipantResponse)
+async def add_team_participant(
+    hackathon_id: uuid.UUID,
+    team_id: uuid.UUID,
+    payload: AddTeamParticipantRequest,
+    request: Request,
+    tenant: TenantContext = Depends(require_org_role(OrgRole.ORGANIZER, OrgRole.ORG_ADMIN, OrgRole.ORG_OWNER)),
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Allows hackathon organizers to provision participant credentials directly and assign them to a team."""
+    ip, ua, corr_id = _extract_telemetry(request)
+    return await service.add_hackathon_team_participant(
+        db=db,
+        org_id=tenant.organization.id,
+        hackathon_id=hackathon_id,
+        team_id=team_id,
         data=payload,
         actor_user_id=tenant.user.id,
         actor_email=tenant.user.email,

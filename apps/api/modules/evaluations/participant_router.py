@@ -297,12 +297,123 @@ class VerifyParticipantGitHubResponse(BaseModel):
     verified_by_user: Optional[str] = None
 
 
+class VerifyJoinCodeRequest(BaseModel):
+    join_code: str = Field(..., min_length=3, max_length=32, description="Team join code")
+
+
+class VerifyJoinCodeResponse(BaseModel):
+    status: str = "success"
+    message: str
+    team_id: uuid.UUID
+    team_name: str
+    hackathon_id: uuid.UUID
+    hackathon_title: str
+    organization_id: uuid.UUID
+    organization_name: str
+    role_in_team: str
+
+
 
 
 
 # =========================================================================
 # ENDPOINTS
 # =========================================================================
+
+@router.post("/verify-join-code", response_model=VerifyJoinCodeResponse)
+async def verify_and_join_team_by_code(
+    payload: VerifyJoinCodeRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db_session),
+) -> VerifyJoinCodeResponse:
+    """
+    Validates a team access/join code for the participant.
+    If valid: assigns the participant to the team and hackathon, unlocking their event dashboard.
+    If invalid: denies access with HTTP 404/400.
+    """
+    clean_code = payload.join_code.strip()
+    if not clean_code:
+        raise AppException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            code="INVALID_JOIN_CODE",
+            message="Team access code cannot be empty.",
+        )
+
+    # Search for team with matching join_code (case-insensitive)
+    stmt = (
+        select(Team, Hackathon, Organization)
+        .join(Hackathon, Team.hackathon_id == Hackathon.id)
+        .join(Organization, Team.organization_id == Organization.id)
+        .where(func.upper(Team.join_code) == clean_code.upper())
+    )
+    result = (await db.execute(stmt)).first()
+    if not result:
+        raise AppException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            code="INVALID_JOIN_CODE",
+            message="Invalid team code. Access to event dashboard denied. Please contact your hackathon organizer.",
+        )
+
+    team, hackathon, org = result
+
+    # Check if participant is already a member of this team
+    stmt_mem = select(TeamMember).where(
+        TeamMember.team_id == team.id,
+        TeamMember.user_id == user.id,
+    )
+    existing_mem = (await db.execute(stmt_mem)).scalar_one_or_none()
+
+    if existing_mem:
+        return VerifyJoinCodeResponse(
+            status="success",
+            message=f"Access verified for team '{team.name}' in '{hackathon.title}'.",
+            team_id=team.id,
+            team_name=team.name,
+            hackathon_id=hackathon.id,
+            hackathon_title=hackathon.title,
+            organization_id=org.id,
+            organization_name=org.name,
+            role_in_team=existing_mem.role_in_team,
+        )
+
+    # Check if participant is already enrolled in another team in this hackathon
+    stmt_other = (
+        select(TeamMember)
+        .join(Team, TeamMember.team_id == Team.id)
+        .where(
+            Team.hackathon_id == hackathon.id,
+            TeamMember.user_id == user.id,
+        )
+    )
+    other_mem = (await db.execute(stmt_other)).scalars().first()
+    if other_mem:
+        raise AppException(
+            status_code=status.HTTP_409_CONFLICT,
+            code="ALREADY_IN_ANOTHER_TEAM",
+            message="You are already registered with another team in this event. Each participant can only join one team per event.",
+        )
+
+    # Add as team member
+    new_member = TeamMember(
+        team_id=team.id,
+        user_id=user.id,
+        role_in_team="member",
+    )
+    db.add(new_member)
+    await db.commit()
+
+    return VerifyJoinCodeResponse(
+        status="success",
+        message=f"Access verified for team '{team.name}' in '{hackathon.title}'. Welcome to the event!",
+        team_id=team.id,
+        team_name=team.name,
+        hackathon_id=hackathon.id,
+        hackathon_title=hackathon.title,
+        organization_id=org.id,
+        organization_name=org.name,
+        role_in_team="member",
+    )
+
 
 @router.get("/teams", response_model=List[ParticipantTeamItem])
 async def list_my_participant_teams(

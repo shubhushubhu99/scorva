@@ -20,6 +20,10 @@ import {
   Edit,
   X,
   Users,
+  UserPlus,
+  Key,
+  Eye,
+  EyeOff,
   GitBranch,
   Scale,
   Plus,
@@ -44,6 +48,8 @@ import {
   HackathonStatus,
   HackathonOverviewResponse,
   TeamListItem,
+  TeamDetailResponse,
+  AddTeamParticipantResponse,
   SubmissionListItem,
   JudgeListItem,
   RubricDetailResponse,
@@ -95,6 +101,25 @@ export default function TenantHackathonDetailPage({
   // Team Modals
   const [isCreateTeamOpen, setIsCreateTeamOpen] = useState<boolean>(false);
   const [teamName, setTeamName] = useState<string>('');
+  const [leaderName, setLeaderName] = useState<string>('');
+  const [leaderEmail, setLeaderEmail] = useState<string>('');
+  const [leaderPassword, setLeaderPassword] = useState<string>('');
+  const [showLeaderPassword, setShowLeaderPassword] = useState<boolean>(false);
+  const [createdTeamResult, setCreatedTeamResult] = useState<TeamDetailResponse | null>(null);
+  const [copiedCode, setCopiedCode] = useState<string | null>(null);
+  const [copiedCreds, setCopiedCreds] = useState<boolean>(false);
+
+  // Add Participant to Existing Team Modal
+  const [isAddParticipantOpen, setIsAddParticipantOpen] = useState<boolean>(false);
+  const [selectedTeamForParticipant, setSelectedTeamForParticipant] = useState<TeamListItem | null>(null);
+  const [partName, setPartName] = useState<string>('');
+  const [partEmail, setPartEmail] = useState<string>('');
+  const [partPassword, setPartPassword] = useState<string>('');
+  const [partRole, setPartRole] = useState<'leader' | 'member'>('member');
+  const [isAddingPart, setIsAddingPart] = useState<boolean>(false);
+  const [showPartPassword, setShowPartPassword] = useState<boolean>(false);
+  const [addedPartResult, setAddedPartResult] = useState<AddTeamParticipantResponse | null>(null);
+
   const [isJoinTeamOpen, setIsJoinTeamOpen] = useState<boolean>(false);
   const [joinCode, setJoinCode] = useState<string>('');
 
@@ -390,21 +415,77 @@ export default function TenantHackathonDetailPage({
     }
   };
 
+  const generateRandomPassword = () => {
+    const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789!@#$%';
+    let pwd = '';
+    for (let i = 0; i < 12; i++) {
+      pwd += chars.charAt(Math.floor(Math.random() * chars.length));
+    }
+    return pwd;
+  };
+
   // Team Handlers
   const handleCreateTeam = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
     try {
-      const newTeam = await api.createHackathonTeam(orgId, hackathonId, { name: teamName.trim() });
+      const payload: {
+        name: string;
+        leader_name?: string;
+        leader_email?: string;
+        leader_password?: string;
+      } = { name: teamName.trim() };
+
+      if (leaderEmail.trim()) {
+        payload.leader_name = leaderName.trim() || undefined;
+        payload.leader_email = leaderEmail.trim();
+        payload.leader_password = leaderPassword.trim() || undefined;
+      }
+
+      const newTeam = await api.createHackathonTeam(orgId, hackathonId, payload);
       setIsCreateTeamOpen(false);
       setTeamName('');
-      setSuccessMessage(`Team "${newTeam.name}" registered! Join Code: ${newTeam.join_code}`);
-      setTimeout(() => setSuccessMessage(null), 5000);
+      setLeaderName('');
+      setLeaderEmail('');
+      setLeaderPassword('');
+      setCreatedTeamResult(newTeam);
       loadTabData('teams');
       loadData(true);
     } catch (err: unknown) {
       if (err instanceof ApiClientError) setError(err.message);
       else setError('Failed to create team.');
+    }
+  };
+
+  const handleAddParticipant = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedTeamForParticipant) return;
+    setError(null);
+    setIsAddingPart(true);
+    try {
+      const res = await api.createHackathonTeamParticipant(
+        orgId,
+        hackathonId,
+        selectedTeamForParticipant.id,
+        {
+          full_name: partName.trim(),
+          email: partEmail.trim(),
+          password: partPassword.trim(),
+          role_in_team: partRole,
+        }
+      );
+      setIsAddParticipantOpen(false);
+      setPartName('');
+      setPartEmail('');
+      setPartPassword('');
+      setAddedPartResult(res);
+      loadTabData('teams');
+      loadData(true);
+    } catch (err: unknown) {
+      if (err instanceof ApiClientError) setError(err.message);
+      else setError('Failed to add participant credentials.');
+    } finally {
+      setIsAddingPart(false);
     }
   };
 
@@ -1356,18 +1437,80 @@ export default function TenantHackathonDetailPage({
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               {teams.map((t) => (
-                <div key={t.id} className="p-4 bg-surface rounded-xl border border-surface-border space-y-3">
-                  <div className="flex items-start justify-between">
+                <div key={t.id} className="p-4 bg-surface rounded-xl border border-surface-border space-y-3 shadow-xs">
+                  <div className="flex items-start justify-between gap-2">
                     <div>
                       <h4 className="text-sm font-bold text-text-primary">{t.name}</h4>
-                      <span className="text-[11px] text-text-muted font-mono block mt-0.5">
-                        Join Code: <span className="text-primary font-bold">{t.join_code}</span>
-                      </span>
+                      <div className="flex items-center gap-1.5 mt-1">
+                        <span className="text-[11px] text-text-muted">Join Code:</span>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            navigator.clipboard.writeText(t.join_code);
+                            setCopiedCode(t.join_code);
+                            setTimeout(() => setCopiedCode(null), 2000);
+                          }}
+                          className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded bg-surface-elevated hover:bg-surface-hover border border-surface-border font-mono text-xs font-bold text-primary transition-colors"
+                          title="Copy team join code"
+                        >
+                          <span>{t.join_code}</span>
+                          {copiedCode === t.join_code ? (
+                            <Check className="w-3 h-3 text-status-success" />
+                          ) : (
+                            <Copy className="w-3 h-3 text-text-muted" />
+                          )}
+                        </button>
+                      </div>
                     </div>
-                    <span className="text-[11px] px-2 py-0.5 bg-surface-elevated border border-surface-border rounded text-text-secondary">
-                      {t.member_count} {t.member_count === 1 ? 'member' : 'members'}
-                    </span>
+                    <div className="flex items-center gap-2">
+                      <span className="text-[11px] px-2 py-0.5 bg-surface-elevated border border-surface-border rounded text-text-secondary font-medium">
+                        {t.member_count} {t.member_count === 1 ? 'member' : 'members'}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSelectedTeamForParticipant(t);
+                          setPartPassword(generateRandomPassword());
+                          setPartRole('member');
+                          setIsAddParticipantOpen(true);
+                        }}
+                        className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-semibold text-primary bg-primary/10 hover:bg-primary/20 border border-primary/20 rounded-lg transition-colors"
+                        title="Add participant with credentials"
+                      >
+                        <UserPlus className="w-3.5 h-3.5" />
+                        <span>Add Participant</span>
+                      </button>
+                    </div>
                   </div>
+
+                  {/* Team Members Roster */}
+                  {t.members && t.members.length > 0 && (
+                    <div className="p-2.5 bg-surface-elevated/60 rounded-lg border border-surface-border/60 text-xs space-y-1.5">
+                      <span className="text-[10px] uppercase font-bold tracking-wider text-text-muted block">
+                        Team Roster:
+                      </span>
+                      <div className="flex flex-wrap gap-1.5">
+                        {t.members.map((m) => (
+                          <div
+                            key={m.id}
+                            className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md bg-surface border border-surface-border text-xs"
+                          >
+                            <span className="font-semibold text-text-primary">
+                              {m.user_name || m.user_email || 'Participant'}
+                            </span>
+                            {m.user_email && m.user_name && (
+                              <span className="text-[10px] text-text-muted">
+                                ({m.user_email})
+                              </span>
+                            )}
+                            <span className="text-[9px] uppercase font-bold px-1 py-0.2 rounded bg-surface-elevated text-primary">
+                              {m.role_in_team}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
 
                   {t.submission ? (
                     <div className="p-2.5 bg-surface-elevated/80 rounded-lg border border-surface-border/60 text-xs flex items-center justify-between">
@@ -2073,9 +2216,14 @@ export default function TenantHackathonDetailPage({
       {/* Register Team Modal */}
       {isCreateTeamOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs">
-          <div className="bg-surface border border-surface-border rounded-2xl w-full max-w-md shadow-surface-elevated overflow-hidden">
+          <div className="bg-surface border border-surface-border rounded-2xl w-full max-w-lg shadow-surface-elevated overflow-hidden">
             <div className="p-5 border-b border-surface-border flex items-center justify-between">
-              <h3 className="text-sm font-semibold text-text-primary">Register New Team</h3>
+              <div>
+                <h3 className="text-sm font-semibold text-text-primary">Register New Team</h3>
+                <p className="text-[11px] text-text-muted mt-0.5">
+                  Generates a unique Team Join Code and optionally creates participant credentials.
+                </p>
+              </div>
               <button
                 type="button"
                 onClick={() => setIsCreateTeamOpen(false)}
@@ -2086,7 +2234,9 @@ export default function TenantHackathonDetailPage({
             </div>
             <form onSubmit={handleCreateTeam} className="p-5 space-y-4 text-xs">
               <div>
-                <label className="block font-medium text-text-secondary mb-1">Team Name</label>
+                <label className="block font-medium text-text-secondary mb-1">
+                  Team Name <span className="text-status-danger">*</span>
+                </label>
                 <input
                   type="text"
                   required
@@ -2096,6 +2246,92 @@ export default function TenantHackathonDetailPage({
                   className="w-full px-3 py-2 text-xs bg-surface-elevated border border-surface-border rounded-lg text-text-primary focus:outline-none focus:border-primary"
                 />
               </div>
+
+              {/* Participant Credentials Section */}
+              <div className="p-3.5 bg-surface-elevated/60 border border-surface-border rounded-xl space-y-3">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-1.5">
+                    <Key className="w-3.5 h-3.5 text-primary" />
+                    <span className="font-semibold text-text-primary text-xs">
+                      Create Participant Credentials (Optional)
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (!leaderPassword) {
+                        setLeaderPassword(generateRandomPassword());
+                      }
+                    }}
+                    className="text-[11px] text-primary hover:underline font-medium"
+                  >
+                    Generate Password
+                  </button>
+                </div>
+                <p className="text-[11px] text-text-muted">
+                  Organizers can provision login credentials directly so the participant can log in without registering.
+                </p>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-[11px] font-medium text-text-secondary mb-1">
+                      Participant Name
+                    </label>
+                    <input
+                      type="text"
+                      placeholder="e.g. John Doe"
+                      value={leaderName}
+                      onChange={(e) => setLeaderName(e.target.value)}
+                      className="w-full px-3 py-1.5 text-xs bg-surface border border-surface-border rounded-lg text-text-primary focus:outline-none focus:border-primary"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-medium text-text-secondary mb-1">
+                      Participant Email
+                    </label>
+                    <input
+                      type="email"
+                      placeholder="e.g. john@example.com"
+                      value={leaderEmail}
+                      onChange={(e) => setLeaderEmail(e.target.value)}
+                      className="w-full px-3 py-1.5 text-xs bg-surface border border-surface-border rounded-lg text-text-primary focus:outline-none focus:border-primary"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-[11px] font-medium text-text-secondary mb-1">
+                    Initial Password
+                  </label>
+                  <div className="relative">
+                    <input
+                      type={showLeaderPassword ? 'text' : 'password'}
+                      placeholder="Enter or generate initial password"
+                      value={leaderPassword}
+                      onChange={(e) => setLeaderPassword(e.target.value)}
+                      className="w-full px-3 py-1.5 pr-20 text-xs bg-surface border border-surface-border rounded-lg text-text-primary focus:outline-none focus:border-primary font-mono"
+                    />
+                    <div className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-1">
+                      <button
+                        type="button"
+                        onClick={() => setShowLeaderPassword(!showLeaderPassword)}
+                        className="p-1 text-text-muted hover:text-text-primary"
+                        title={showLeaderPassword ? 'Hide password' : 'Show password'}
+                      >
+                        {showLeaderPassword ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setLeaderPassword(generateRandomPassword())}
+                        className="px-1.5 py-0.5 rounded bg-surface-elevated hover:bg-surface-hover text-[10px] font-medium text-primary border border-surface-border"
+                      >
+                        Gen
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
               <div className="pt-2 flex items-center justify-end gap-2.5 border-t border-surface-border">
                 <button
                   type="button"
@@ -2109,10 +2345,285 @@ export default function TenantHackathonDetailPage({
                   disabled={!teamName.trim()}
                   className="px-4 py-2 text-xs font-semibold text-white bg-primary hover:bg-primary-hover disabled:opacity-50 rounded-lg shadow-sm"
                 >
-                  Register Team
+                  Register Team & Generate Code
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Team Created Success Modal */}
+      {createdTeamResult && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs">
+          <div className="bg-surface border border-surface-border rounded-2xl w-full max-w-md shadow-surface-elevated overflow-hidden p-6 space-y-5">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-full bg-status-success/20 flex items-center justify-center text-status-success shrink-0">
+                <CheckCircle2 className="w-6 h-6" />
+              </div>
+              <div>
+                <h3 className="text-base font-bold text-text-primary">Team Registered!</h3>
+                <p className="text-xs text-text-muted">
+                  Team <span className="font-semibold text-text-primary">{createdTeamResult.name}</span> is ready.
+                </p>
+              </div>
+            </div>
+
+            {/* Prominent Join Code Card */}
+            <div className="p-4 bg-surface-elevated rounded-xl border border-surface-border space-y-2">
+              <span className="text-[11px] font-bold uppercase tracking-wider text-text-muted block">
+                Team Access / Join Code:
+              </span>
+              <div className="flex items-center justify-between p-2.5 bg-surface rounded-lg border border-surface-border">
+                <span className="font-mono text-base font-bold text-primary tracking-wider">
+                  {createdTeamResult.join_code}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    navigator.clipboard.writeText(createdTeamResult.join_code);
+                    setCopiedCode(createdTeamResult.join_code);
+                    setTimeout(() => setCopiedCode(null), 2000);
+                  }}
+                  className="inline-flex items-center gap-1.5 px-3 py-1 rounded-md bg-primary text-white text-xs font-semibold hover:bg-primary-hover transition-colors"
+                >
+                  {copiedCode === createdTeamResult.join_code ? (
+                    <>
+                      <Check className="w-3.5 h-3.5" />
+                      <span>Copied!</span>
+                    </>
+                  ) : (
+                    <>
+                      <Copy className="w-3.5 h-3.5" />
+                      <span>Copy Code</span>
+                    </>
+                  )}
+                </button>
+              </div>
+              <p className="text-[11px] text-text-muted">
+                Participants must enter this code upon login to access the dashboard for this event.
+              </p>
+            </div>
+
+            {/* Created Participant Credentials (if any) */}
+            {createdTeamResult.created_participant && (
+              <div className="p-4 bg-surface-elevated rounded-xl border border-surface-border space-y-2 text-xs">
+                <div className="flex items-center justify-between">
+                  <span className="font-bold text-text-primary">Participant Login Credentials</span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const text = `Event: ${hackathon?.title}\nTeam: ${createdTeamResult.name}\nTeam Code: ${createdTeamResult.join_code}\nEmail: ${createdTeamResult.created_participant?.email}\nPassword: ${createdTeamResult.created_participant?.temporary_password || '(configured)'}`;
+                      navigator.clipboard.writeText(text);
+                      setCopiedCreds(true);
+                      setTimeout(() => setCopiedCreds(false), 2000);
+                    }}
+                    className="text-[11px] font-semibold text-primary hover:underline flex items-center gap-1"
+                  >
+                    {copiedCreds ? <Check className="w-3 h-3 text-status-success" /> : <Copy className="w-3 h-3" />}
+                    <span>{copiedCreds ? 'Copied Details!' : 'Copy All'}</span>
+                  </button>
+                </div>
+                <div className="p-2.5 bg-surface rounded-lg border border-surface-border space-y-1.5 font-mono text-[11px]">
+                  <div>
+                    <span className="text-text-muted">Name: </span>
+                    <span className="text-text-primary font-medium">{createdTeamResult.created_participant.full_name}</span>
+                  </div>
+                  <div>
+                    <span className="text-text-muted">Email: </span>
+                    <span className="text-text-primary font-medium">{createdTeamResult.created_participant.email}</span>
+                  </div>
+                  {createdTeamResult.created_participant.temporary_password && (
+                    <div>
+                      <span className="text-text-muted">Password: </span>
+                      <span className="text-primary font-bold">{createdTeamResult.created_participant.temporary_password}</span>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            <button
+              type="button"
+              onClick={() => setCreatedTeamResult(null)}
+              className="w-full py-2 px-4 text-xs font-semibold text-white bg-primary hover:bg-primary-hover rounded-lg transition-colors"
+            >
+              Done
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Add Participant to Team Modal */}
+      {isAddParticipantOpen && selectedTeamForParticipant && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs">
+          <div className="bg-surface border border-surface-border rounded-2xl w-full max-w-md shadow-surface-elevated overflow-hidden">
+            <div className="p-5 border-b border-surface-border flex items-center justify-between">
+              <div>
+                <h3 className="text-sm font-semibold text-text-primary">
+                  Add Participant to {selectedTeamForParticipant.name}
+                </h3>
+                <p className="text-[11px] text-text-muted mt-0.5">
+                  Provisions participant credentials and assigns them to this team.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsAddParticipantOpen(false)}
+                className="p-1.5 rounded-lg text-text-muted hover:text-text-primary"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <form onSubmit={handleAddParticipant} className="p-5 space-y-4 text-xs">
+              <div>
+                <label className="block font-medium text-text-secondary mb-1">
+                  Full Name <span className="text-status-danger">*</span>
+                </label>
+                <input
+                  type="text"
+                  required
+                  placeholder="e.g. Alice Walker"
+                  value={partName}
+                  onChange={(e) => setPartName(e.target.value)}
+                  className="w-full px-3 py-2 text-xs bg-surface-elevated border border-surface-border rounded-lg text-text-primary focus:outline-none focus:border-primary"
+                />
+              </div>
+
+              <div>
+                <label className="block font-medium text-text-secondary mb-1">
+                  Participant Email <span className="text-status-danger">*</span>
+                </label>
+                <input
+                  type="email"
+                  required
+                  placeholder="e.g. alice@example.com"
+                  value={partEmail}
+                  onChange={(e) => setPartEmail(e.target.value)}
+                  className="w-full px-3 py-2 text-xs bg-surface-elevated border border-surface-border rounded-lg text-text-primary focus:outline-none focus:border-primary"
+                />
+              </div>
+
+              <div>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="font-medium text-text-secondary">
+                    Initial Password <span className="text-status-danger">*</span>
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => setPartPassword(generateRandomPassword())}
+                    className="text-[11px] text-primary hover:underline font-medium"
+                  >
+                    Generate Random
+                  </button>
+                </div>
+                <div className="relative">
+                  <input
+                    type={showPartPassword ? 'text' : 'password'}
+                    required
+                    placeholder="Enter or generate initial password"
+                    value={partPassword}
+                    onChange={(e) => setPartPassword(e.target.value)}
+                    className="w-full px-3 py-2 pr-12 text-xs bg-surface-elevated border border-surface-border rounded-lg text-text-primary focus:outline-none focus:border-primary font-mono"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPartPassword(!showPartPassword)}
+                    className="absolute right-2.5 top-1/2 -translate-y-1/2 p-1 text-text-muted hover:text-text-primary"
+                  >
+                    {showPartPassword ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                  </button>
+                </div>
+              </div>
+
+              <div>
+                <label className="block font-medium text-text-secondary mb-1">Role in Team</label>
+                <select
+                  value={partRole}
+                  onChange={(e) => setPartRole(e.target.value as 'leader' | 'member')}
+                  className="w-full px-3 py-2 text-xs bg-surface-elevated border border-surface-border rounded-lg text-text-primary focus:outline-none focus:border-primary"
+                >
+                  <option value="member">Member</option>
+                  <option value="leader">Leader</option>
+                </select>
+              </div>
+
+              <div className="pt-2 flex items-center justify-end gap-2.5 border-t border-surface-border">
+                <button
+                  type="button"
+                  onClick={() => setIsAddParticipantOpen(false)}
+                  className="px-3 py-2 text-xs font-medium text-text-muted hover:text-text-primary"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={isAddingPart || !partName.trim() || !partEmail.trim() || !partPassword.trim()}
+                  className="px-4 py-2 text-xs font-semibold text-white bg-primary hover:bg-primary-hover disabled:opacity-50 rounded-lg shadow-sm"
+                >
+                  {isAddingPart ? 'Creating Account...' : 'Create Credentials & Add'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Added Participant Result Modal */}
+      {addedPartResult && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs">
+          <div className="bg-surface border border-surface-border rounded-2xl w-full max-w-md shadow-surface-elevated overflow-hidden p-6 space-y-4">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-full bg-status-success/20 flex items-center justify-center text-status-success shrink-0">
+                <CheckCircle2 className="w-6 h-6" />
+              </div>
+              <div>
+                <h3 className="text-base font-bold text-text-primary">Participant Created!</h3>
+                <p className="text-xs text-text-muted">
+                  Added to team <span className="font-semibold text-text-primary">{addedPartResult.team_name}</span>.
+                </p>
+              </div>
+            </div>
+
+            <div className="p-3 bg-surface-elevated rounded-xl border border-surface-border space-y-1 text-xs">
+              <span className="text-[10px] uppercase font-bold tracking-wider text-text-muted block">
+                Team Join Code:
+              </span>
+              <span className="font-mono text-sm font-bold text-primary block">
+                {addedPartResult.join_code}
+              </span>
+            </div>
+
+            <div className="p-3.5 bg-surface-elevated rounded-xl border border-surface-border space-y-2 text-xs">
+              <div className="flex items-center justify-between">
+                <span className="font-bold text-text-primary">Created Credentials</span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const text = `Team: ${addedPartResult.team_name}\nTeam Code: ${addedPartResult.join_code}\nName: ${addedPartResult.participant.full_name}\nEmail: ${addedPartResult.participant.email}\nPassword: ${addedPartResult.participant.temporary_password}`;
+                    navigator.clipboard.writeText(text);
+                    setCopiedCreds(true);
+                    setTimeout(() => setCopiedCreds(false), 2000);
+                  }}
+                  className="text-[11px] font-semibold text-primary hover:underline flex items-center gap-1"
+                >
+                  {copiedCreds ? <Check className="w-3 h-3 text-status-success" /> : <Copy className="w-3 h-3" />}
+                  <span>{copiedCreds ? 'Copied!' : 'Copy'}</span>
+                </button>
+              </div>
+              <div className="p-2.5 bg-surface rounded-lg border border-surface-border font-mono text-[11px] space-y-1">
+                <div>Email: <strong className="text-text-primary">{addedPartResult.participant.email}</strong></div>
+                <div>Password: <strong className="text-primary">{addedPartResult.participant.temporary_password}</strong></div>
+              </div>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => setAddedPartResult(null)}
+              className="w-full py-2 px-4 text-xs font-semibold text-white bg-primary hover:bg-primary-hover rounded-lg transition-colors"
+            >
+              Done
+            </button>
           </div>
         </div>
       )}

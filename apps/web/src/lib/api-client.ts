@@ -37,6 +37,10 @@ import {
   TeamListItem,
   TeamDetailResponse,
   CreateTeamRequest,
+  AddTeamParticipantRequest,
+  AddTeamParticipantResponse,
+  VerifyJoinCodeRequest,
+  VerifyJoinCodeResponse,
   JoinTeamRequest,
   SubmissionListItem,
   SubmissionDetailResponse,
@@ -223,10 +227,20 @@ export const api = {
   },
 
   // Auth
-  login: async (email: string, password: string, redirectUrl?: string): Promise<LoginResponse> => {
+  login: async (
+    email: string,
+    password: string,
+    redirectUrl?: string,
+    teamCode?: string
+  ): Promise<LoginResponse> => {
     return fetchApi<LoginResponse>('/api/v1/auth/login', {
       method: 'POST',
-      body: JSON.stringify({ email, password, redirect_url: redirectUrl }),
+      body: JSON.stringify({
+        email,
+        password,
+        redirect_url: redirectUrl,
+        team_code: teamCode || undefined,
+      }),
     });
   },
   setupMfa: async (enrollmentToken: string): Promise<MfaSetupResponse> => {
@@ -732,6 +746,21 @@ export const api = {
   ): Promise<TeamDetailResponse> => {
     return fetchApi<TeamDetailResponse>(
       `/api/v1/organizations/${orgId}/hackathons/${hackathonId}/teams/join`,
+      {
+        method: 'POST',
+        body: JSON.stringify(data),
+      }
+    );
+  },
+
+  createHackathonTeamParticipant: async (
+    orgId: string,
+    hackathonId: string,
+    teamId: string,
+    data: AddTeamParticipantRequest
+  ): Promise<AddTeamParticipantResponse> => {
+    return fetchApi<AddTeamParticipantResponse>(
+      `/api/v1/organizations/${orgId}/hackathons/${hackathonId}/teams/${teamId}/participants`,
       {
         method: 'POST',
         body: JSON.stringify(data),
@@ -1349,6 +1378,18 @@ export const api = {
       {
         method: 'POST',
         body: JSON.stringify(data),
+      }
+    );
+  },
+
+  verifyParticipantJoinCode: async (
+    joinCode: string
+  ): Promise<VerifyJoinCodeResponse> => {
+    return fetchApi<VerifyJoinCodeResponse>(
+      '/api/v1/participant/verify-join-code',
+      {
+        method: 'POST',
+        body: JSON.stringify({ join_code: joinCode }),
       }
     );
   },

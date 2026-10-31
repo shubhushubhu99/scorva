@@ -467,8 +467,51 @@ export interface TeamSubmissionSummary {
   status: string;
 }
 
+export interface CreatedParticipantInfo {
+  user_id: string;
+  email: string;
+  full_name: string;
+  role_in_team: string;
+  temporary_password?: string | null;
+}
+
 export interface CreateTeamRequest {
   name: string;
+  leader_name?: string;
+  leader_email?: string;
+  leader_password?: string;
+}
+
+export interface AddTeamParticipantRequest {
+  full_name: string;
+  email: string;
+  password: string;
+  role_in_team?: 'leader' | 'member';
+}
+
+export interface AddTeamParticipantResponse {
+  status: string;
+  message: string;
+  team_id: string;
+  team_name: string;
+  join_code: string;
+  participant: CreatedParticipantInfo;
+}
+
+export interface VerifyJoinCodeRequest {
+  join_code: string;
+}
+
+export interface VerifyJoinCodeResponse {
+  status: string;
+  message: string;
+  team_id: string;
+  team_name: string;
+  hackathon_id: string;
+  hackathon_title: string;
+  organization_id: string;
+  organization_name: string;
+  role_in_team: string;
 }
 
 export interface JoinTeamRequest {
@@ -484,6 +527,7 @@ export interface TeamListItem {
   created_by_user_id: string;
   created_at: string;
   member_count: number;
+  members?: TeamMemberInfo[];
   submission?: TeamSubmissionSummary | null;
 }
 
@@ -497,6 +541,7 @@ export interface TeamDetailResponse {
   created_at: string;
   members: TeamMemberInfo[];
   submission?: TeamSubmissionSummary | null;
+  created_participant?: CreatedParticipantInfo | null;
 }
 
 export type RepositoryConnectionStatus = 'unverified' | 'verified' | 'failed' | 'unlinked';

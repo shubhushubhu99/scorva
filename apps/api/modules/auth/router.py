@@ -2,7 +2,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Optional, Tuple, Union
 import uuid
 from fastapi import APIRouter, Depends, Request, Response, status
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from apps.api.config import settings
@@ -44,6 +44,7 @@ from apps.api.modules.auth.schemas import (
 )
 from apps.api.modules.auth.service import resolve_user_routing, validate_redirect_destination
 from apps.api.modules.configuration.service import resolve_effective_configuration
+from apps.api.modules.evaluations.models import Team, TeamMember
 from apps.api.modules.users.models import User, UserSession
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
@@ -276,6 +277,37 @@ async def admin_login(
             status_code=status.HTTP_401_UNAUTHORIZED,
             title="Authentication Failed",
         )
+
+    # If participant supplied a team access code, validate it before granting dashboard access
+    if req.team_code and req.team_code.strip():
+        clean_code = req.team_code.strip()
+        stmt_team = select(Team).where(func.upper(Team.join_code) == clean_code.upper())
+        team_obj = (await db.execute(stmt_team)).scalar_one_or_none()
+        if not team_obj:
+            raise AppException(
+                code="INVALID_JOIN_CODE",
+                message="Invalid team code. Access to event dashboard denied. Please contact your hackathon organizer.",
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                title="Invalid Team Code",
+            )
+        # Check team membership
+        stmt_mem = select(TeamMember).where(TeamMember.team_id == team_obj.id, TeamMember.user_id == user.id)
+        if not (await db.execute(stmt_mem)).scalar_one_or_none():
+            stmt_other = (
+                select(TeamMember)
+                .join(Team, TeamMember.team_id == Team.id)
+                .where(Team.hackathon_id == team_obj.hackathon_id, TeamMember.user_id == user.id)
+            )
+            if (await db.execute(stmt_other)).scalars().first():
+                raise AppException(
+                    code="ALREADY_IN_ANOTHER_TEAM",
+                    message="You are already registered with another team in this event.",
+                    status_code=status.HTTP_409_CONFLICT,
+                    title="Already in Team",
+                )
+            new_mem = TeamMember(team_id=team_obj.id, user_id=user.id, role_in_team="member")
+            db.add(new_mem)
+            await db.flush()
 
     # Multi-Factor Authentication check governed by centralized platform configuration
     effective_config = await resolve_effective_configuration(db)

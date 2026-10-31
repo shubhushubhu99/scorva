@@ -7,6 +7,7 @@ class LoginRequest(BaseModel):
     email: EmailStr
     password: str = Field(..., min_length=1)
     redirect_url: Optional[str] = Field(None, description="Optional target redirect URL")
+    team_code: Optional[str] = Field(None, description="Optional team access code for participants")
 
 
 class LoginMfaRequiredResponse(BaseModel):

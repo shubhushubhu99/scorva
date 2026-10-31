@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from apps.api.core.exceptions import AppException
+from apps.api.core.security import hash_password
 from apps.api.core.ssrf_guard import SSRFViolationError
 from apps.api.modules.audit.models import AuditOutcome
 from apps.api.modules.audit.service import record_audit_event
@@ -32,7 +33,10 @@ from apps.api.modules.evaluations import service as evaluations_service
 from apps.api.modules.hackathons.models import Hackathon, HackathonStatus
 from apps.api.modules.hackathons.subresources_schemas import (
     AddCriterionRequest,
+    AddTeamParticipantRequest,
+    AddTeamParticipantResponse,
     AssignJudgeRequest,
+    CreatedParticipantInfo,
     CreateRubricRequest,
     CreateSubmissionRequest,
     CreateTeamRequest,
@@ -182,9 +186,25 @@ async def list_hackathon_teams(
 
     items: List[TeamListItem] = []
     for t in teams:
-        # Count members
-        stmt_count = select(func.count(TeamMember.id)).where(TeamMember.team_id == t.id)
-        m_count = (await db.execute(stmt_count)).scalar_one() or 0
+        # Load team members
+        stmt_members = (
+            select(TeamMember, User)
+            .join(User, TeamMember.user_id == User.id)
+            .where(TeamMember.team_id == t.id)
+            .order_by(TeamMember.joined_at.asc())
+        )
+        mem_rows = (await db.execute(stmt_members)).all()
+        team_members_info = [
+            TeamMemberInfo(
+                id=tm.id,
+                user_id=u.id,
+                role_in_team=tm.role_in_team,
+                joined_at=tm.joined_at,
+                user_email=u.email,
+                user_name=u.full_name,
+            )
+            for tm, u in mem_rows
+        ]
 
         # Primary active submission
         stmt_sub = (
@@ -217,7 +237,8 @@ async def list_hackathon_teams(
                 join_code=t.join_code,
                 created_by_user_id=t.created_by_user_id,
                 created_at=t.created_at,
-                member_count=m_count,
+                member_count=len(team_members_info),
+                members=team_members_info,
                 submission=sub_summary,
             )
         )
@@ -238,30 +259,97 @@ async def create_hackathon_team(
 ) -> TeamDetailResponse:
     await _ensure_hackathon(db, org_id, hackathon_id)
 
-    # Check if user is already in a team in this hackathon
-    stmt_existing = (
-        select(TeamMember)
-        .join(Team, TeamMember.team_id == Team.id)
-        .where(
-            Team.hackathon_id == hackathon_id,
-            TeamMember.user_id == actor_user_id,
+    created_participant_info: Optional[CreatedParticipantInfo] = None
+    target_leader_id: Optional[uuid.UUID] = None
+
+    # If organizer/creator provides participant credentials alongside the team
+    if data.leader_email:
+        clean_email = str(data.leader_email).lower().strip()
+        clean_name = (data.leader_name or "Team Leader").strip()
+        initial_password = data.leader_password or "ParticipantPass123!"
+
+        # Look up or create participant user
+        stmt_u = select(User).where(User.email == clean_email, User.deleted_at.is_(None))
+        part_user = (await db.execute(stmt_u)).scalar_one_or_none()
+        if not part_user:
+            part_user = User(
+                id=uuid.uuid4(),
+                email=clean_email,
+                full_name=clean_name,
+                hashed_password=hash_password(initial_password),
+                platform_role=None,
+                is_active=True,
+                is_verified=True,
+            )
+            db.add(part_user)
+            await db.flush()
+        else:
+            if data.leader_password:
+                part_user.hashed_password = hash_password(initial_password)
+            if clean_name:
+                part_user.full_name = clean_name
+            await db.flush()
+
+        # Check if this participant is already in another team in this hackathon
+        stmt_existing = (
+            select(TeamMember)
+            .join(Team, TeamMember.team_id == Team.id)
+            .where(
+                Team.hackathon_id == hackathon_id,
+                TeamMember.user_id == part_user.id,
+            )
         )
-    )
-    existing_membership = (await db.execute(stmt_existing)).scalars().first()
-    if existing_membership:
-        raise AppException(
-            status_code=409,
-            code="ALREADY_IN_HACKATHON_TEAM",
-            message="You are already a member of a team in this hackathon.",
+        if (await db.execute(stmt_existing)).scalars().first():
+            raise AppException(
+                status_code=409,
+                code="ALREADY_IN_HACKATHON_TEAM",
+                message=f"Participant '{clean_email}' is already a member of a team in this hackathon.",
+            )
+
+        target_leader_id = part_user.id
+        created_participant_info = CreatedParticipantInfo(
+            user_id=part_user.id,
+            email=part_user.email,
+            full_name=part_user.full_name,
+            role_in_team="leader",
+            temporary_password=initial_password,
         )
 
-    team = await evaluations_service.create_team(
-        db=db,
-        organization_id=org_id,
-        hackathon_id=hackathon_id,
-        user_id=actor_user_id,
-        name=data.name.strip(),
-    )
+        team = await evaluations_service.create_team(
+            db=db,
+            organization_id=org_id,
+            hackathon_id=hackathon_id,
+            user_id=actor_user_id,
+            name=data.name.strip(),
+            leader_user_id=target_leader_id,
+            add_creator_as_member=False,
+        )
+    else:
+        # Default registration: creator is added as team leader
+        stmt_existing = (
+            select(TeamMember)
+            .join(Team, TeamMember.team_id == Team.id)
+            .where(
+                Team.hackathon_id == hackathon_id,
+                TeamMember.user_id == actor_user_id,
+            )
+        )
+        if (await db.execute(stmt_existing)).scalars().first():
+            raise AppException(
+                status_code=409,
+                code="ALREADY_IN_HACKATHON_TEAM",
+                message="You are already a member of a team in this hackathon.",
+            )
+
+        team = await evaluations_service.create_team(
+            db=db,
+            organization_id=org_id,
+            hackathon_id=hackathon_id,
+            user_id=actor_user_id,
+            name=data.name.strip(),
+            leader_user_id=actor_user_id,
+            add_creator_as_member=True,
+        )
 
     await record_audit_event(
         db=db,
@@ -280,8 +368,25 @@ async def create_hackathon_team(
         correlation_id=correlation_id,
     )
 
-    # Retrieve user detail for creator
-    user = (await db.execute(select(User).where(User.id == actor_user_id))).scalar_one_or_none()
+    # Fetch team members for response
+    stmt_members = (
+        select(TeamMember, User)
+        .join(User, TeamMember.user_id == User.id)
+        .where(TeamMember.team_id == team.id)
+        .order_by(TeamMember.joined_at.asc())
+    )
+    mem_rows = (await db.execute(stmt_members)).all()
+    members_info = [
+        TeamMemberInfo(
+            id=tm.id,
+            user_id=u.id,
+            role_in_team=tm.role_in_team,
+            joined_at=tm.joined_at,
+            user_email=u.email,
+            user_name=u.full_name,
+        )
+        for tm, u in mem_rows
+    ]
 
     return TeamDetailResponse(
         id=team.id,
@@ -291,17 +396,131 @@ async def create_hackathon_team(
         join_code=team.join_code,
         created_by_user_id=team.created_by_user_id,
         created_at=team.created_at,
-        members=[
-            TeamMemberInfo(
-                id=team.id,  # representative member id
-                user_id=actor_user_id,
-                role_in_team="leader",
-                joined_at=team.created_at,
-                user_email=user.email if user else actor_email,
-                user_name=user.full_name if user else None,
-            )
-        ],
+        members=members_info,
         submission=None,
+        created_participant=created_participant_info,
+    )
+
+
+async def add_hackathon_team_participant(
+    db: AsyncSession,
+    org_id: uuid.UUID,
+    hackathon_id: uuid.UUID,
+    team_id: uuid.UUID,
+    data: AddTeamParticipantRequest,
+    actor_user_id: uuid.UUID,
+    actor_email: str,
+    actor_role: str,
+    ip_address: str,
+    user_agent: str,
+    correlation_id: Optional[str] = None,
+) -> AddTeamParticipantResponse:
+    await _ensure_hackathon(db, org_id, hackathon_id)
+
+    stmt_team = select(Team).where(
+        Team.id == team_id,
+        Team.hackathon_id == hackathon_id,
+        Team.organization_id == org_id,
+    )
+    team = (await db.execute(stmt_team)).scalar_one_or_none()
+    if not team:
+        raise AppException(
+            status_code=404,
+            code="TEAM_NOT_FOUND",
+            message="Team not found in this hackathon.",
+        )
+
+    clean_email = str(data.email).lower().strip()
+    clean_name = data.full_name.strip()
+
+    stmt_u = select(User).where(User.email == clean_email, User.deleted_at.is_(None))
+    user = (await db.execute(stmt_u)).scalar_one_or_none()
+    if not user:
+        user = User(
+            id=uuid.uuid4(),
+            email=clean_email,
+            full_name=clean_name,
+            hashed_password=hash_password(data.password),
+            platform_role=None,
+            is_active=True,
+            is_verified=True,
+        )
+        db.add(user)
+        await db.flush()
+    else:
+        user.hashed_password = hash_password(data.password)
+        if clean_name:
+            user.full_name = clean_name
+        user.is_active = True
+        await db.flush()
+
+    # Check if already in this team
+    stmt_mem = select(TeamMember).where(
+        TeamMember.team_id == team.id,
+        TeamMember.user_id == user.id,
+    )
+    if (await db.execute(stmt_mem)).scalar_one_or_none():
+        raise AppException(
+            status_code=409,
+            code="ALREADY_IN_TEAM",
+            message=f"User '{clean_email}' is already a member of this team.",
+        )
+
+    # Check if in another team in this hackathon
+    stmt_other = (
+        select(TeamMember)
+        .join(Team, TeamMember.team_id == Team.id)
+        .where(
+            Team.hackathon_id == hackathon_id,
+            TeamMember.user_id == user.id,
+        )
+    )
+    if (await db.execute(stmt_other)).scalars().first():
+        raise AppException(
+            status_code=409,
+            code="ALREADY_IN_HACKATHON_TEAM",
+            message=f"User '{clean_email}' is already registered in another team in this hackathon.",
+        )
+
+    role = data.role_in_team if data.role_in_team in ("leader", "member") else "member"
+    member = TeamMember(
+        team_id=team.id,
+        user_id=user.id,
+        role_in_team=role,
+    )
+    db.add(member)
+    await db.flush()
+
+    await record_audit_event(
+        db=db,
+        action="team_participant_provisioned",
+        resource_type="team_member",
+        resource_id=str(member.id),
+        outcome=AuditOutcome.SUCCESS,
+        actor_user_id=actor_user_id,
+        actor_email=actor_email,
+        actor_role=actor_role,
+        organization_id=org_id,
+        reason=f"Organizer provisioned participant credentials for '{clean_email}' in team '{team.name}'",
+        diff_payload={"team_id": str(team.id), "user_id": str(user.id), "role": role},
+        ip_address=ip_address,
+        user_agent=user_agent,
+        correlation_id=correlation_id,
+    )
+
+    return AddTeamParticipantResponse(
+        status="success",
+        message=f"Participant '{clean_name}' successfully added to team '{team.name}'.",
+        team_id=team.id,
+        team_name=team.name,
+        join_code=team.join_code,
+        participant=CreatedParticipantInfo(
+            user_id=user.id,
+            email=user.email,
+            full_name=user.full_name,
+            role_in_team=role,
+            temporary_password=data.password,
+        ),
     )
 
 

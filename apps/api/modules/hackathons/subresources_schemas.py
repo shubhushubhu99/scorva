@@ -2,7 +2,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any, Dict, List, Optional
 import uuid
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
 
 class StrictBase(BaseModel):
@@ -48,8 +48,35 @@ class TeamSubmissionSummary(StrictBase):
     status: str
 
 
+class CreatedParticipantInfo(StrictBase):
+    user_id: uuid.UUID
+    email: str
+    full_name: str
+    role_in_team: str = "leader"
+    temporary_password: Optional[str] = None
+
+
 class CreateTeamRequest(StrictBase):
     name: str = Field(..., min_length=2, max_length=150, description="Unique team name within hackathon")
+    leader_name: Optional[str] = Field(None, min_length=2, max_length=150, description="Optional participant full name")
+    leader_email: Optional[EmailStr] = Field(None, description="Optional participant email")
+    leader_password: Optional[str] = Field(None, min_length=6, max_length=128, description="Optional participant initial password")
+
+
+class AddTeamParticipantRequest(StrictBase):
+    full_name: str = Field(..., min_length=2, max_length=150, description="Participant full name")
+    email: EmailStr = Field(..., description="Participant email address")
+    password: str = Field(..., min_length=6, max_length=128, description="Participant initial password")
+    role_in_team: str = Field(default="member", pattern="^(leader|member)$", description="Role in team: leader or member")
+
+
+class AddTeamParticipantResponse(StrictBase):
+    status: str = "success"
+    message: str
+    team_id: uuid.UUID
+    team_name: str
+    join_code: str
+    participant: CreatedParticipantInfo
 
 
 class JoinTeamRequest(StrictBase):
@@ -65,6 +92,7 @@ class TeamListItem(StrictBase):
     created_by_user_id: uuid.UUID
     created_at: datetime
     member_count: int = 1
+    members: List[TeamMemberInfo] = []
     submission: Optional[TeamSubmissionSummary] = None
 
 
@@ -78,6 +106,7 @@ class TeamDetailResponse(StrictBase):
     created_at: datetime
     members: List[TeamMemberInfo] = []
     submission: Optional[TeamSubmissionSummary] = None
+    created_participant: Optional[CreatedParticipantInfo] = None
 
 
 # ==========================================

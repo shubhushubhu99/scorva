@@ -241,8 +241,10 @@ async def create_team(
     hackathon_id: uuid.UUID,
     user_id: uuid.UUID,
     name: str,
+    leader_user_id: Optional[uuid.UUID] = None,
+    add_creator_as_member: bool = True,
 ) -> Team:
-    """Create a new team and add creator as leader."""
+    """Create a new team and optionally add designated leader or creator."""
     # Check duplicate team name in hackathon
     stmt = select(Team).where(
         Team.hackathon_id == hackathon_id,
@@ -267,14 +269,15 @@ async def create_team(
     db.add(team)
     await db.flush()
 
-    # Add creator as leader
-    member = TeamMember(
-        team_id=team.id,
-        user_id=user_id,
-        role_in_team="leader",
-    )
-    db.add(member)
-    await db.flush()
+    target_leader_id = leader_user_id if leader_user_id else (user_id if add_creator_as_member else None)
+    if target_leader_id:
+        member = TeamMember(
+            team_id=team.id,
+            user_id=target_leader_id,
+            role_in_team="leader",
+        )
+        db.add(member)
+        await db.flush()
 
     return team
 

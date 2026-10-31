@@ -1247,6 +1247,10 @@ export interface SupportTicketItem {
   id: string;
   ticket_number: string;
   category: string;
+  team_name: string;
+  team_number?: string | null;
+  block_number?: string | null;
+  lab_number?: string | null;
   subject: string;
   description: string;
   status: 'open' | 'in_progress' | 'waiting_response' | 'resolved' | 'closed' | string;
@@ -1254,6 +1258,8 @@ export interface SupportTicketItem {
   created_at: string;
   updated_at: string;
   replies_count: number;
+  attachment_url?: string | null;
+  attachment_name?: string | null;
 }
 
 export interface SupportReplyItem {
@@ -1271,9 +1277,14 @@ export interface SupportTicketDetailResponse {
 
 export interface CreateSupportTicketRequest {
   category: string;
+  team_name: string;
+  team_number?: string | null;
+  block_number?: string | null;
+  lab_number?: string | null;
   subject: string;
   description: string;
   hackathon_id?: string | null;
+  attachment?: File | null;
 }
 
 export interface CreateSupportReplyRequest {
@@ -1367,7 +1378,6 @@ export interface VerifyParticipantGitHubResponse {
   verified_at: string;
   verified_by_user?: string | null;
 }
-
 
 
 

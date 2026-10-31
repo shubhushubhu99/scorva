@@ -1291,6 +1291,44 @@ export interface CreateSupportReplyRequest {
   message: string;
 }
 
+export interface AdminSupportTicketItem extends SupportTicketItem {
+  participant_id: string;
+  participant_email?: string | null;
+  participant_name?: string | null;
+}
+
+export interface AdminSupportTicketStats {
+  total: number;
+  open: number;
+  in_progress: number;
+  waiting_response: number;
+  resolved: number;
+  closed: number;
+}
+
+export interface AdminSupportTicketListResponse {
+  items: AdminSupportTicketItem[];
+  total: number;
+  page: number;
+  limit: number;
+  total_pages: number;
+  stats: AdminSupportTicketStats;
+}
+
+export interface AdminSupportTicketDetailResponse {
+  ticket: AdminSupportTicketItem;
+  replies: SupportReplyItem[];
+}
+
+export interface AdminCreateSupportReplyRequest {
+  message: string;
+  status?: string;
+}
+
+export interface AdminUpdateSupportTicketStatusRequest {
+  status: string;
+}
+
 export interface ProjectRegistrationDetail {
   id: string;
   team_name: string;

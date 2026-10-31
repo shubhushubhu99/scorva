@@ -1514,18 +1514,27 @@ async def download_support_ticket_attachment(
     db: AsyncSession = Depends(get_db_session),
 ) -> FileResponse:
     attachment_stmt = text("""
-        SELECT ticket_number, attachment_name, attachment_content_type
+        SELECT ticket_number, attachment_name, attachment_content_type, user_id
         FROM participant_support_tickets
-        WHERE id = :tid AND user_id = :uid AND attachment_url IS NOT NULL
+        WHERE id = :tid AND attachment_url IS NOT NULL
     """)
     row = (await db.execute(
-        attachment_stmt, {"tid": ticket_id, "uid": user.id}
+        attachment_stmt, {"tid": ticket_id}
     )).fetchone()
     if row is None:
         raise AppException(
             status_code=404,
             code="ATTACHMENT_NOT_FOUND",
             message="Attachment not found.",
+        )
+
+    is_owner = (row[3] == user.id)
+    is_staff = bool(user.platform_role)
+    if not is_owner and not is_staff:
+        raise AppException(
+            status_code=403,
+            code="FORBIDDEN_ATTACHMENT_ACCESS",
+            message="Access denied to this attachment.",
         )
 
     attachment_dir = Path(settings.SUPPORT_ATTACHMENT_DIR)

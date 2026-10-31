@@ -16,6 +16,14 @@ depends_on = None
 
 
 def upgrade() -> None:
+    conn = op.get_bind()
+    inspector = sa.inspect(conn)
+    existing = inspector.get_table_names()
+    if "participant_support_replies" in existing:
+        op.drop_table("participant_support_replies")
+    if "participant_support_tickets" in existing:
+        op.drop_table("participant_support_tickets")
+
     op.create_table(
         "participant_support_tickets",
         sa.Column("id", postgresql.UUID(as_uuid=True), nullable=False),

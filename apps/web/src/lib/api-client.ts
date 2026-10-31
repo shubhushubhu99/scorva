@@ -86,6 +86,11 @@ import {
   SupportTicketDetailResponse,
   CreateSupportTicketRequest,
   CreateSupportReplyRequest,
+  AdminSupportTicketItem,
+  AdminSupportTicketListResponse,
+  AdminSupportTicketDetailResponse,
+  AdminCreateSupportReplyRequest,
+  AdminUpdateSupportTicketStatusRequest,
   RegistrationStatusResponse,
   ParticipantProjectRegistrationRequest,
   ProjectRegistrationSuccessResponse,
@@ -1476,5 +1481,68 @@ export const api = {
         method: 'POST',
       }
     );
+  },
+
+  getAdminSupportTickets: async (
+    params?: {
+      status?: string;
+      category?: string;
+      search?: string;
+      page?: number;
+      limit?: number;
+    },
+    options?: RequestInit
+  ): Promise<AdminSupportTicketListResponse> => {
+    const query = new URLSearchParams();
+    if (params?.status && params.status !== 'all') query.set('status', params.status);
+    if (params?.category && params.category !== 'all') query.set('category', params.category);
+    if (params?.search) query.set('search', params.search);
+    if (params?.page) query.set('page', params.page.toString());
+    if (params?.limit) query.set('limit', params.limit.toString());
+    const qs = query.toString();
+    return fetchApi<AdminSupportTicketListResponse>(
+      `/api/v1/admin/support/tickets${qs ? `?${qs}` : ''}`,
+      options
+    );
+  },
+
+  getAdminSupportTicketDetail: async (
+    ticketId: string,
+    options?: RequestInit
+  ): Promise<AdminSupportTicketDetailResponse> => {
+    return fetchApi<AdminSupportTicketDetailResponse>(
+      `/api/v1/admin/support/tickets/${encodeURIComponent(ticketId)}`,
+      options
+    );
+  },
+
+  replyAdminSupportTicket: async (
+    ticketId: string,
+    data: AdminCreateSupportReplyRequest
+  ): Promise<SupportReplyItem> => {
+    return fetchApi<SupportReplyItem>(
+      `/api/v1/admin/support/tickets/${encodeURIComponent(ticketId)}/replies`,
+      {
+        method: 'POST',
+        body: JSON.stringify(data),
+      }
+    );
+  },
+
+  updateAdminSupportTicketStatus: async (
+    ticketId: string,
+    status: string
+  ): Promise<{ id: string; status: string }> => {
+    return fetchApi<{ id: string; status: string }>(
+      `/api/v1/admin/support/tickets/${encodeURIComponent(ticketId)}/status`,
+      {
+        method: 'PATCH',
+        body: JSON.stringify({ status }),
+      }
+    );
+  },
+
+  getAdminSupportTicketAttachmentUrl: (ticketId: string): string => {
+    return `${API_BASE_URL.replace(/\/$/, '')}/api/v1/admin/support/tickets/${encodeURIComponent(ticketId)}/attachment`;
   },
 };

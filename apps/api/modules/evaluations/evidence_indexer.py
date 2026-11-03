@@ -263,8 +263,8 @@ class EvidenceIndex:
             })
             return ET.tostring(elem, encoding="unicode")
 
-        s_line = start_line or 1
-        e_line = end_line or min(indexed.total_lines, 100)
+        s_line = max(1, start_line or 1)
+        e_line = min(indexed.total_lines, end_line if end_line is not None else indexed.total_lines)
         snippet = indexed.get_line_range_snippet(s_line, e_line, max_chars=2000)
 
         elem = ET.Element("UNTRUSTED_REPOSITORY_EVIDENCE", {

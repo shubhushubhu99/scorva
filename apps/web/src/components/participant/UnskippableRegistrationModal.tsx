@@ -14,6 +14,10 @@ import {
   Trash2,
   ShieldCheck,
   UserCheck,
+  Key,
+  Eye,
+  EyeOff,
+  ExternalLink,
 } from 'lucide-react';
 import { api, ApiClientError } from '@/lib/api-client';
 import { useAuth } from '@/lib/auth-context';
@@ -38,6 +42,8 @@ export function UnskippableRegistrationModal({
   const [teamName, setTeamName] = useState(statusData.default_team_name || '');
   const [teamNumber, setTeamNumber] = useState('');
   const [githubUrl, setGithubUrl] = useState('');
+  const [patToken, setPatToken] = useState('');
+  const [showPatToken, setShowPatToken] = useState(false);
   const [projectTitle, setProjectTitle] = useState('');
   const [projectDescription, setProjectDescription] = useState('');
   const [agreementAccepted, setAgreementAccepted] = useState(false);
@@ -147,6 +153,7 @@ export function UnskippableRegistrationModal({
         agreement_accepted: agreementAccepted,
         hackathon_id: statusData.default_hackathon_id || undefined,
         team_id: statusData.default_team_id || undefined,
+        pat_token: patToken.trim() || undefined,
       });
 
       onSuccess();
@@ -268,7 +275,48 @@ export function UnskippableRegistrationModal({
               />
             </div>
             <p className="text-[11px] text-[#64748B] mt-1">
-              Ensure repository is public or accessible to Scorva automated evaluation worker.
+              Provide your public or private GitHub repository for automated analysis.
+            </p>
+          </div>
+
+          {/* GitHub PAT (Optional for instant live repository verification) */}
+          <div className="p-3.5 rounded-xl bg-[#F8FAFC] border border-[#E2E8F0] space-y-2">
+            <div className="flex items-center justify-between">
+              <label htmlFor="intake-pat-token" className="block text-xs font-semibold text-[#111827]">
+                GitHub Personal Access Token (PAT){' '}
+                <span className="text-[#64748B] font-normal">(Optional, for instant live verification)</span>
+              </label>
+              <a
+                href="https://github.com/settings/tokens/new?scopes=repo,read:user"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-[11px] text-[#2563EB] hover:underline inline-flex items-center gap-1 font-medium"
+              >
+                Generate Token <ExternalLink className="w-3 h-3" />
+              </a>
+            </div>
+            <div className="relative">
+              <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-[#64748B]">
+                <Key className="w-4 h-4" />
+              </div>
+              <input
+                id="intake-pat-token"
+                type={showPatToken ? 'text' : 'password'}
+                value={patToken}
+                onChange={(e) => setPatToken(e.target.value)}
+                placeholder="ghp_xxxxxxxxxxxxxxxxxxxx or github_pat_..."
+                className="w-full pl-10 pr-10 py-2 text-xs sm:text-sm rounded-lg bg-white border border-[#E2E8F0] text-[#111827] placeholder-[#94A3B8] focus:outline-none focus:ring-2 focus:ring-[#2563EB] focus:border-transparent font-mono transition-all"
+              />
+              <button
+                type="button"
+                onClick={() => setShowPatToken(!showPatToken)}
+                className="absolute inset-y-0 right-0 pr-3 flex items-center text-[#64748B] hover:text-[#111827]"
+              >
+                {showPatToken ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+              </button>
+            </div>
+            <p className="text-[11px] text-[#64748B] leading-relaxed">
+              Enables live verification of commit SHA and default branch against api.github.com. Stored securely with AES-256-GCM encryption.
             </p>
           </div>
 

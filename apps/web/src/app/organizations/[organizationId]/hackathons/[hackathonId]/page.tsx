@@ -42,6 +42,7 @@ import {
   Sparkles,
 } from 'lucide-react';
 import { StatusBadge } from '@/components/admin/StatusBadge';
+import { DualExplanationView } from '@/components/evaluations/DualExplanationView';
 import { api, ApiClientError } from '@/lib/api-client';
 import {
   HackathonDetailResponse,
@@ -3389,12 +3390,15 @@ export default function TenantHackathonDetailPage({
                             </div>
                           )}
 
-                          {reviewData.ai_evaluation.summary_assessment && (
+                          {(reviewData.ai_evaluation.quick_summary || reviewData.ai_evaluation.summary_assessment) && (
                             <div className="p-3 rounded-lg bg-surface-card border border-surface-border space-y-1">
                               <span className="text-[10px] uppercase font-semibold text-text-muted tracking-wider block">AI Evaluation Summary</span>
-                              <p className="text-text-secondary text-[11px] leading-relaxed whitespace-pre-wrap">
-                                {reviewData.ai_evaluation.summary_assessment}
-                              </p>
+                              <DualExplanationView
+                                quickExplanation={reviewData.ai_evaluation.quick_summary}
+                                detailedExplanation={reviewData.ai_evaluation.detailed_summary}
+                                rawText={reviewData.ai_evaluation.summary_assessment}
+                                compact
+                              />
                             </div>
                           )}
 
@@ -3411,7 +3415,12 @@ export default function TenantHackathonDetailPage({
                                     {cs.awarded_score} / {cs.max_score}
                                   </span>
                                 </div>
-                                <p className="text-text-muted italic">{cs.rationale}</p>
+                                <DualExplanationView
+                                  quickExplanation={cs.quick_explanation}
+                                  detailedExplanation={cs.detailed_explanation}
+                                  rawText={cs.rationale}
+                                  compact
+                                />
 
                                 {cs.evidence_references && cs.evidence_references.length > 0 && (
                                   <div className="pt-1.5 border-t border-surface-border/60 space-y-1">
@@ -3879,9 +3888,11 @@ export default function TenantHackathonDetailPage({
                         </div>
 
                         {/* Summary Assessment Text */}
-                        <div className="p-3 bg-surface rounded-lg border border-surface-border text-xs text-text-secondary leading-relaxed whitespace-pre-wrap">
-                          {evalTransparency.result.summary_assessment}
-                        </div>
+                        <DualExplanationView
+                          quickExplanation={evalTransparency.result.quick_summary}
+                          detailedExplanation={evalTransparency.result.detailed_summary}
+                          rawText={evalTransparency.result.summary_assessment}
+                        />
 
                         {/* Insufficient Evidence Warning Banner */}
                         {evalTransparency.result.has_insufficient_evidence && (
@@ -3934,9 +3945,14 @@ export default function TenantHackathonDetailPage({
                             </div>
 
                             {/* Rationale */}
-                            <div className="p-3 bg-surface-elevated rounded-lg text-xs text-text-secondary leading-relaxed">
-                              <strong className="text-text-primary text-[11px] block mb-1">Evaluator Rationale:</strong>
-                              {cs.rationale}
+                            <div className="p-3 bg-surface-elevated rounded-lg text-xs text-text-secondary leading-relaxed space-y-2">
+                              <strong className="text-text-primary text-[11px] block">Evaluator Explanation:</strong>
+                              <DualExplanationView
+                                quickExplanation={cs.quick_explanation}
+                                detailedExplanation={cs.detailed_explanation}
+                                rawText={cs.rationale}
+                                compact
+                              />
                             </div>
 
                             {/* Evidence References */}

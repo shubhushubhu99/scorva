@@ -32,7 +32,16 @@ ALLOWED_INTERNAL_AI_HOSTS: Set[str] = {
     "ollama",
     "localhost",
     "127.0.0.1",
+    "10.3.2.157",
+    "10.3.2.158",
 }
+
+
+def allow_internal_ai_host(host_or_ip: str) -> None:
+    """Dynamically authorizes an internal AI inference host or IP."""
+    clean = host_or_ip.strip().lower()
+    if clean:
+        ALLOWED_INTERNAL_AI_HOSTS.add(clean)
 
 # Strict Profile B Permitted Internal Ports (Ollama default 11434, plus 443 for internal TLS)
 ALLOWED_INTERNAL_AI_PORTS: Set[int] = {
@@ -96,9 +105,9 @@ def is_valid_internal_ai_ip(
     if ip.is_global:
         return False
 
-    # Private network addresses are permitted ONLY for docker hostname 'ollama'
+    # Private network addresses are permitted for docker hostname 'ollama' or approved internal AI hosts
     if ip.is_private:
-        return hostname == "ollama"
+        return hostname == "ollama" or hostname in ALLOWED_INTERNAL_AI_HOSTS or str(ip) in ALLOWED_INTERNAL_AI_HOSTS
 
     return False
 

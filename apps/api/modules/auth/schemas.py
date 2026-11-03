@@ -8,6 +8,7 @@ class LoginRequest(BaseModel):
     password: str = Field(..., min_length=1)
     redirect_url: Optional[str] = Field(None, description="Optional target redirect URL")
     team_code: Optional[str] = Field(None, description="Optional team access code for participants")
+    judge_code: Optional[str] = Field(None, description="Optional judge access code for judges")
 
 
 class LoginMfaRequiredResponse(BaseModel):
@@ -54,6 +55,9 @@ class UserResponse(BaseModel):
     routing: Optional[UserRoutingProfile] = None
     created_at: Optional[datetime] = None
     last_login_at: Optional[datetime] = None
+    judge_access_code: Optional[str] = None
+    judge_hackathon_title: Optional[str] = None
+    temporary_password: Optional[str] = None
 
 
 class AuthSuccessResponse(BaseModel):

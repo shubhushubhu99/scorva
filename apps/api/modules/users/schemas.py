@@ -12,6 +12,8 @@ class UserCreateRequest(BaseModel):
     platform_role: Optional[PlatformRole] = None
     organization_id: Optional[uuid.UUID] = None
     org_role: Optional[str] = "organizer"
+    hackathon_id: Optional[uuid.UUID] = None
+    is_judge: Optional[bool] = False
 
 
 class UserStatusUpdateRequest(BaseModel):

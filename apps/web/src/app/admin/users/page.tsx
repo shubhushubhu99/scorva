@@ -21,10 +21,15 @@ import {
   EyeOff,
   Sparkles,
   AlertCircle,
+  Gavel,
+  Award,
+  Copy,
+  Check,
+  Key,
 } from 'lucide-react';
 import { PageHeader } from '@/components/admin/PageHeader';
 import { api, ApiClientError } from '@/lib/api-client';
-import { UserProfile, OrganizationSummaryResponse, PlatformRole } from '@/types/api';
+import { UserProfile, OrganizationSummaryResponse, PlatformRole, HackathonDetailResponse } from '@/types/api';
 
 export default function UsersPage() {
   const [users, setUsers] = useState<UserProfile[]>([]);
@@ -44,18 +49,37 @@ export default function UsersPage() {
   const [roleFilter, setRoleFilter] = useState<string>('all');
   const [statusFilter, setStatusFilter] = useState<string>('all');
 
-  // Create User / Organizer Modal state
+  // Create User / Organizer / Judge Modal state
   const [isCreateModalOpen, setIsCreateModalOpen] = useState<boolean>(false);
   const [isSubmittingCreate, setIsSubmittingCreate] = useState<boolean>(false);
   const [createFullName, setCreateFullName] = useState<string>('');
   const [createEmail, setCreateEmail] = useState<string>('');
   const [createPassword, setCreatePassword] = useState<string>('');
   const [showCreatePassword, setShowCreatePassword] = useState<boolean>(false);
-  const [createRoleType, setCreateRoleType] = useState<'organizer' | 'platform_owner' | 'security_admin'>('organizer');
+  const [createRoleType, setCreateRoleType] = useState<'organizer' | 'judge' | 'platform_owner' | 'security_admin'>('organizer');
   const [createOrgId, setCreateOrgId] = useState<string>('');
   const [createOrgRole, setCreateOrgRole] = useState<string>('organizer');
+  const [createHackathonId, setCreateHackathonId] = useState<string>('');
   const [createError, setCreateError] = useState<string | null>(null);
   const [orgOptions, setOrgOptions] = useState<OrganizationSummaryResponse[]>([]);
+  const [hackathonOptions, setHackathonOptions] = useState<HackathonDetailResponse[]>([]);
+
+  // Newly Provisioned Credentials Modal
+  const [createdCredentials, setCreatedCredentials] = useState<{
+    fullName: string;
+    email: string;
+    password?: string;
+    judgeCode?: string;
+    hackathonTitle?: string;
+    role: string;
+  } | null>(null);
+  const [copiedKey, setCopiedKey] = useState<string | null>(null);
+
+  const copyToClipboard = (text: string, key?: string) => {
+    navigator.clipboard.writeText(text);
+    setCopiedKey(key || text);
+    setTimeout(() => setCopiedKey(null), 2500);
+  };
 
   useEffect(() => {
     if (isCreateModalOpen) {
@@ -65,8 +89,15 @@ export default function UsersPage() {
           setCreateOrgId(res.items[0].id);
         }
       }).catch(() => {});
+
+      api.getAdminHackathons({ limit: 100 }).then((res) => {
+        setHackathonOptions(res.items || []);
+        if (res.items?.length && !createHackathonId) {
+          setCreateHackathonId(res.items[0].id);
+        }
+      }).catch(() => {});
     }
-  }, [isCreateModalOpen, createOrgId]);
+  }, [isCreateModalOpen, createOrgId, createHackathonId]);
 
   const generatePassword = () => {
     const chars = 'abcdefghjkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789!@#$%';
@@ -82,16 +113,34 @@ export default function UsersPage() {
     setCreateError(null);
     setIsSubmittingCreate(true);
     try {
-      const isPlatform = createRoleType !== 'organizer';
-      await api.createAdminUser({
+      const isJudge = createRoleType === 'judge';
+      const isPlatform = createRoleType === 'platform_owner' || createRoleType === 'security_admin';
+      
+      const pwd = createPassword.trim() || (isJudge ? 'JudgeAccess2026!' : 'UserPass123!');
+      
+      const res = await api.createAdminUser({
         full_name: createFullName.trim(),
         email: createEmail.trim(),
-        password: createPassword.trim() || 'OrganizerPass123!',
+        password: pwd,
         platform_role: isPlatform ? (createRoleType as PlatformRole) : null,
-        organization_id: !isPlatform && createOrgId ? createOrgId : undefined,
-        org_role: !isPlatform ? createOrgRole : undefined,
+        organization_id: !isPlatform && !isJudge && createOrgId ? createOrgId : undefined,
+        org_role: !isPlatform && !isJudge ? createOrgRole : undefined,
+        hackathon_id: isJudge ? createHackathonId : undefined,
+        is_judge: isJudge,
       });
+
+      const matchedHackathon = hackathonOptions.find((h) => h.id === createHackathonId);
+
       setIsCreateModalOpen(false);
+      setCreatedCredentials({
+        fullName: res.full_name,
+        email: res.email,
+        password: pwd,
+        judgeCode: res.judge_access_code || undefined,
+        hackathonTitle: res.judge_hackathon_title || matchedHackathon?.title || undefined,
+        role: isJudge ? 'Judge / Evaluator' : isPlatform ? formatRole(res.platform_role) : 'Event Organizer',
+      });
+
       setCreateFullName('');
       setCreateEmail('');
       setCreatePassword('');
@@ -267,7 +316,7 @@ export default function UsersPage() {
             className="flex items-center gap-2 px-3.5 py-2 text-xs font-semibold text-white bg-primary hover:bg-primary-hover rounded-lg transition-colors shadow-sm"
           >
             <UserPlus className="w-3.5 h-3.5" />
-            <span>Create User / Organizer</span>
+            <span>Create User / Judge</span>
           </button>
           <button
             type="button"
@@ -341,6 +390,7 @@ export default function UsersPage() {
             aria-label="Filter by Platform Role"
           >
             <option value="all">All Roles</option>
+            <option value="judge">Judge / Evaluator</option>
             <option value="platform_owner">Platform Owner</option>
             <option value="platform_ops_admin">Platform Ops Admin</option>
             <option value="ai_ops_admin">AI Ops Admin</option>
@@ -432,12 +482,45 @@ export default function UsersPage() {
                       <div className="text-text-muted font-mono text-[11px]">{u.email}</div>
                     </td>
                     <td className="py-3 px-4">
-                      <div className="flex items-center gap-1.5">
-                        <Shield className="w-3.5 h-3.5 text-primary" />
-                        <span className="font-medium text-text-primary">
-                          {formatRole(u.platform_role)}
-                        </span>
-                      </div>
+                      {u.judge_access_code ? (
+                        <div className="space-y-1">
+                          <div className="flex items-center gap-1.5">
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-semibold bg-purple-500/10 text-purple-400 border border-purple-500/30">
+                              <Gavel className="w-3 h-3" />
+                              <span>Judge / Evaluator</span>
+                            </span>
+                          </div>
+                          {u.judge_hackathon_title && (
+                            <div className="text-[11px] text-text-muted truncate max-w-[200px]" title={u.judge_hackathon_title}>
+                              {u.judge_hackathon_title}
+                            </div>
+                          )}
+                          <div className="flex items-center gap-1.5 font-mono text-[11px]">
+                            <span className="bg-primary/10 text-primary px-1.5 py-0.5 rounded border border-primary/20 font-bold tracking-wider">
+                              {u.judge_access_code}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => copyToClipboard(u.judge_access_code!, `table-${u.id}`)}
+                              className="p-1 text-text-muted hover:text-text-primary transition-colors rounded"
+                              title="Copy Judge Access Code"
+                            >
+                              {copiedKey === `table-${u.id}` ? (
+                                <Check className="w-3 h-3 text-status-success" />
+                              ) : (
+                                <Copy className="w-3 h-3" />
+                              )}
+                            </button>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="flex items-center gap-1.5">
+                          <Shield className="w-3.5 h-3.5 text-primary" />
+                          <span className="font-medium text-text-primary">
+                            {formatRole(u.platform_role)}
+                          </span>
+                        </div>
+                      )}
                     </td>
                     <td className="py-3 px-4">
                       {u.is_active ? (
@@ -638,14 +721,49 @@ export default function UsersPage() {
                 </label>
                 <select
                   value={createRoleType}
-                  onChange={(e) => setCreateRoleType(e.target.value as 'organizer' | 'platform_owner' | 'security_admin')}
+                  onChange={(e) => setCreateRoleType(e.target.value as 'organizer' | 'judge' | 'platform_owner' | 'security_admin')}
                   className="w-full px-3 py-2 text-xs bg-surface-elevated border border-surface-border rounded-lg text-text-primary focus:outline-none focus:border-primary"
                 >
                   <option value="organizer">Event Organizer / Tenant User</option>
+                  <option value="judge">Judge / Evaluator (Assigned to Hackathon)</option>
                   <option value="platform_owner">Platform Owner (Super Admin)</option>
                   <option value="security_admin">Security Administrator</option>
                 </select>
               </div>
+
+              {createRoleType === 'judge' && (
+                <div className="p-3 bg-surface-elevated border border-primary/20 rounded-xl space-y-2.5">
+                  <div className="flex items-center gap-1.5 text-primary text-xs font-semibold">
+                    <Gavel className="w-3.5 h-3.5" />
+                    <span>Assign Judge to Hackathon</span>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-text-secondary mb-1">
+                      Target Hackathon <span className="text-status-error">*</span>
+                    </label>
+                    {hackathonOptions.length === 0 ? (
+                      <p className="text-xs text-text-muted">Loading available hackathons...</p>
+                    ) : (
+                      <select
+                        value={createHackathonId}
+                        onChange={(e) => setCreateHackathonId(e.target.value)}
+                        required
+                        className="w-full px-3 py-2 text-xs bg-surface border border-surface-border rounded-lg text-text-primary focus:outline-none focus:border-primary"
+                      >
+                        <option value="">Select a hackathon...</option>
+                        {hackathonOptions.map((h) => (
+                          <option key={h.id} value={h.id}>
+                            {h.title} (/{h.slug})
+                          </option>
+                        ))}
+                      </select>
+                    )}
+                  </div>
+                  <p className="text-[11px] text-text-muted leading-relaxed">
+                    A unique <strong>Judge Access Code</strong> (e.g. JDG-XXXXXXXX) will be generated. The judge will enter this code along with their credentials on the Judge Access login page.
+                  </p>
+                </div>
+              )}
 
               {createRoleType === 'organizer' && orgOptions.length > 0 && (
                 <div className="p-3 bg-surface-elevated border border-surface-border rounded-xl space-y-3">
@@ -700,13 +818,138 @@ export default function UsersPage() {
                 </button>
                 <button
                   type="submit"
-                  disabled={isSubmittingCreate || !createFullName.trim() || !createEmail.trim()}
+                  disabled={isSubmittingCreate || !createFullName.trim() || !createEmail.trim() || (createRoleType === 'judge' && !createHackathonId)}
                   className="px-4 py-2 text-xs font-semibold text-white bg-primary hover:bg-primary-hover disabled:opacity-50 rounded-lg transition-colors shadow-sm"
                 >
                   {isSubmittingCreate ? 'Creating Account...' : 'Create Account'}
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Modal: Created Credentials Display */}
+      {createdCredentials && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-xs animate-in fade-in duration-150">
+          <div className="bg-surface border border-surface-border rounded-2xl w-full max-w-md shadow-2xl overflow-hidden animate-in zoom-in-95 duration-150">
+            <div className="p-5 border-b border-surface-border flex items-center justify-between bg-primary/5">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-xl bg-status-success/10 border border-status-success/30 flex items-center justify-center text-status-success">
+                  <CheckCircle2 className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-text-primary">Account Provisioned</h3>
+                  <p className="text-[11px] text-text-muted">Credentials ready to share with user</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setCreatedCredentials(null)}
+                className="p-1.5 rounded-lg text-text-muted hover:text-text-primary hover:bg-surface-elevated transition-colors"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="p-5 space-y-4">
+              {createdCredentials.judgeCode && (
+                <div className="p-3.5 bg-purple-500/10 border border-purple-500/30 rounded-xl space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[11px] font-semibold text-purple-400 uppercase tracking-wider flex items-center gap-1.5">
+                      <Gavel className="w-3.5 h-3.5" />
+                      Judge Access Code
+                    </span>
+                    <span className="text-[10px] text-text-muted">Required for Login</span>
+                  </div>
+                  <div className="flex items-center justify-between bg-surface border border-purple-500/20 rounded-lg px-3 py-2">
+                    <span className="font-mono font-bold text-base text-purple-300 tracking-wider">
+                      {createdCredentials.judgeCode}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => copyToClipboard(createdCredentials.judgeCode!, 'cred-judge-code')}
+                      className="flex items-center gap-1 px-2.5 py-1 text-xs font-semibold bg-purple-500/20 hover:bg-purple-500/30 text-purple-300 rounded-md transition-colors"
+                    >
+                      {copiedKey === 'cred-judge-code' ? (
+                        <>
+                          <Check className="w-3.5 h-3.5 text-status-success" />
+                          <span>Copied</span>
+                        </>
+                      ) : (
+                        <>
+                          <Copy className="w-3.5 h-3.5" />
+                          <span>Copy Code</span>
+                        </>
+                      )}
+                    </button>
+                  </div>
+                  {createdCredentials.hackathonTitle && (
+                    <p className="text-[11px] text-text-muted">
+                      Assigned to event: <span className="text-text-primary font-medium">{createdCredentials.hackathonTitle}</span>
+                    </p>
+                  )}
+                </div>
+              )}
+
+              <div className="space-y-2.5 bg-surface-elevated p-3.5 rounded-xl border border-surface-border text-xs">
+                <div className="flex items-center justify-between pb-2 border-b border-surface-border">
+                  <span className="text-text-muted">Account Name</span>
+                  <span className="font-medium text-text-primary">{createdCredentials.fullName}</span>
+                </div>
+                <div className="flex items-center justify-between pb-2 border-b border-surface-border">
+                  <span className="text-text-muted">Email Address</span>
+                  <div className="flex items-center gap-1.5">
+                    <span className="font-mono text-text-primary">{createdCredentials.email}</span>
+                    <button
+                      type="button"
+                      onClick={() => copyToClipboard(createdCredentials.email, 'cred-email')}
+                      className="p-1 text-text-muted hover:text-text-primary transition-colors"
+                      title="Copy email"
+                    >
+                      {copiedKey === 'cred-email' ? <Check className="w-3 h-3 text-status-success" /> : <Copy className="w-3 h-3" />}
+                    </button>
+                  </div>
+                </div>
+                {createdCredentials.password && (
+                  <div className="flex items-center justify-between pb-2 border-b border-surface-border">
+                    <span className="text-text-muted">Temporary Password</span>
+                    <div className="flex items-center gap-1.5">
+                      <span className="font-mono text-text-primary">{createdCredentials.password}</span>
+                      <button
+                        type="button"
+                        onClick={() => copyToClipboard(createdCredentials.password!, 'cred-password')}
+                        className="p-1 text-text-muted hover:text-text-primary transition-colors"
+                        title="Copy password"
+                      >
+                        {copiedKey === 'cred-password' ? <Check className="w-3 h-3 text-status-success" /> : <Copy className="w-3 h-3" />}
+                      </button>
+                    </div>
+                  </div>
+                )}
+                <div className="flex items-center justify-between">
+                  <span className="text-text-muted">Assigned Role</span>
+                  <span className="font-semibold text-primary">{createdCredentials.role}</span>
+                </div>
+              </div>
+
+              <div className="p-3 bg-surface-elevated/50 rounded-lg text-[11px] text-text-muted flex items-start gap-2">
+                <Key className="w-3.5 h-3.5 text-primary shrink-0 mt-0.5" />
+                <span>
+                  {createdCredentials.judgeCode
+                    ? 'The judge must visit /login, click the "Judge Access" tab, and enter their Email, Password, and this Judge Access Code to access the evaluation portal.'
+                    : 'The user can sign in immediately using these credentials.'}
+                </span>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setCreatedCredentials(null)}
+                className="w-full py-2 text-xs font-semibold text-white bg-primary hover:bg-primary-hover rounded-lg transition-colors shadow-sm"
+              >
+                I Have Saved These Credentials
+              </button>
+            </div>
           </div>
         </div>
       )}

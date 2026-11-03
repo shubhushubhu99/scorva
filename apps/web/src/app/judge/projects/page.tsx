@@ -18,6 +18,7 @@ import {
   Bot,
   FileEdit,
   Eye,
+  Zap,
 } from 'lucide-react';
 import { api, ApiClientError } from '@/lib/api-client';
 import { JudgeQueueItem, JudgeAssignmentItem } from '@/types/api';
@@ -356,33 +357,43 @@ export default function JudgeProjectsPage() {
 
                       {/* Action */}
                       <td className="py-4 px-5 text-right">
-                        <Link
-                          href={reviewUrl}
-                          className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all shadow-xs ${
-                            sub.review_status === 'submitted'
-                              ? 'bg-white border border-[#E2E8F0] text-[#111827] hover:bg-[#F8FAFC]'
-                              : sub.review_status === 'draft'
-                              ? 'bg-[#EFF6FF] text-[#2563EB] border border-[#BFDBFE] hover:bg-blue-100'
-                              : 'bg-[#2563EB] text-white hover:bg-blue-700'
-                          }`}
-                        >
-                          {sub.review_status === 'submitted' ? (
-                            <>
-                              <Eye className="w-3.5 h-3.5" />
-                              <span>View Review</span>
-                            </>
-                          ) : sub.review_status === 'draft' ? (
-                            <>
-                              <FileEdit className="w-3.5 h-3.5" />
-                              <span>Continue Draft</span>
-                            </>
-                          ) : (
-                            <>
-                              <span>Start Review</span>
-                              <ChevronRight className="w-3.5 h-3.5" />
-                            </>
-                          )}
-                        </Link>
+                        <div className="inline-flex items-center gap-2">
+                          <Link
+                            href={reviewUrl}
+                            className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-semibold text-[#1E40AF] bg-[#DBEAFE] hover:bg-[#BFDBFE] transition-colors border border-[#93C5FD]"
+                            title="Inspect repository architecture, tech stack & innovation with Ollama"
+                          >
+                            <Zap className="w-3.5 h-3.5 text-amber-500 fill-amber-500" />
+                            <span>Inspect (Ollama)</span>
+                          </Link>
+                          <Link
+                            href={reviewUrl}
+                            className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all shadow-xs ${
+                              sub.review_status === 'submitted'
+                                ? 'bg-white border border-[#E2E8F0] text-[#111827] hover:bg-[#F8FAFC]'
+                                : sub.review_status === 'draft'
+                                ? 'bg-[#EFF6FF] text-[#2563EB] border border-[#BFDBFE] hover:bg-blue-100'
+                                : 'bg-[#2563EB] text-white hover:bg-blue-700'
+                            }`}
+                          >
+                            {sub.review_status === 'submitted' ? (
+                              <>
+                                <Eye className="w-3.5 h-3.5" />
+                                <span>View Review</span>
+                              </>
+                            ) : sub.review_status === 'draft' ? (
+                              <>
+                                <FileEdit className="w-3.5 h-3.5" />
+                                <span>Continue Draft</span>
+                              </>
+                            ) : (
+                              <>
+                                <span>Start Review</span>
+                                <ChevronRight className="w-3.5 h-3.5" />
+                              </>
+                            )}
+                          </Link>
+                        </div>
                       </td>
                     </tr>
                   );

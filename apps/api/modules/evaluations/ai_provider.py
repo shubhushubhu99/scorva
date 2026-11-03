@@ -342,7 +342,9 @@ class MockAIProviderClient:
 
         # Baseline minimal valid response conforming to AIEvaluationOutputPayload
         return {
-            "summary_assessment": "Mock automated static evaluation assessment: code meets baseline requirements.",
+            "quick_summary": "Mock evaluation: code meets basic hackathon requirements.",
+            "detailed_summary": "Mock detailed evaluation: code is structured into basic files and passes baseline criteria in simple, clear language.",
+            "summary_assessment": "Quick Summary:\nMock evaluation: code meets basic hackathon requirements.\n\nDetailed Breakdown:\nMock detailed evaluation: code is structured into basic files and passes baseline criteria in simple, clear language.",
             "has_insufficient_evidence": False,
             "criterion_scores": [],
         }
@@ -378,6 +380,11 @@ def get_ai_provider_client(
         target_url = base_url or settings.OLLAMA_BASE_URL
         return OllamaProviderClient(base_url=target_url, dns_resolver=dns_resolver)
 
+    if provider_name == "pi":
+        from apps.api.modules.evaluations.providers.pi.client import PiProviderClient
+        default_model = getattr(config, "ai_default_model", None) if config else None
+        return PiProviderClient(default_model=default_model)
+
     raise AIProviderConfigError(
-        f"Unsupported AI provider '{provider_name}'. Permitted providers are 'ollama' and 'mock'."
+        f"Unsupported AI provider '{provider_name}'. Permitted providers are 'ollama', 'pi', and 'mock'."
     )

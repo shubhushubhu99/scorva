@@ -16,6 +16,8 @@ from apps.api.core.metrics import metrics_collector
 from apps.api.modules.audit.models import AuditEvent, AuditOutcome
 from apps.api.modules.evaluations.ai_provider import (
     AIProviderClient,
+    AIProviderConnectionError,
+    AIProviderTimeoutError,
     MockAIProviderClient,
     get_ai_provider_client,
 )
@@ -25,7 +27,10 @@ from apps.api.modules.evaluations.evidence_indexer import (
     TaxonomyCategory,
 )
 from apps.api.modules.evaluations.models import (
+    EvaluationCriterionAssessment,
     EvaluationCriterionScore,
+    EvaluationDeductionAttribution,
+    EvaluationEvidenceRecord,
     EvaluationJob,
     EvaluationResult,
     EvidenceReference,
@@ -40,9 +45,16 @@ from apps.api.modules.evaluations.output_validator import (
     AIEvaluationValidationError,
     execute_evaluation_with_retry,
 )
+from apps.api.modules.evaluations.policy.contracts import (
+    CriterionAssessmentContract,
+    DeductionAttributionContract,
+    EvidenceContract,
+    StandardizedEvaluationOutput,
+)
 from apps.api.modules.evaluations.prompt_compiler import (
     compile_evaluation_prompt,
     get_evaluation_json_schema,
+    get_standardized_evaluation_json_schema,
 )
 from apps.api.modules.evaluations.scoring_calculator import (
     CriterionInput,
@@ -277,7 +289,7 @@ async def load_evaluation_context_async(
 def commit_evaluation_result_fenced_sync(
     db: Session,
     claim: WorkerClaim,
-    ai_output: AIEvaluationOutputPayload,
+    ai_output: Union[StandardizedEvaluationOutput, AIEvaluationOutputPayload],
     score_result: EvaluationScoreResult,
     model_provider: str = "mock",
     model_name: str = "mock-evaluator",
@@ -298,8 +310,10 @@ def commit_evaluation_result_fenced_sync(
        - lease_expires_at > clock_timestamp() (authoritative server time)
        - cancellation_requested is false
     4. If ANY guard check fails: ROLLBACK. Zero scores or audit records are committed.
-    5. If ALL guards pass: Inserts EvaluationResult, EvaluationCriterionScore,
-       EvidenceReference, AuditEvent, and atomically transitions EvaluationJob to 'completed'.
+    5. If ALL guards pass: Inserts EvaluationResult, Phase 1 fair contracts tables
+       (EvaluationEvidenceRecord, EvaluationCriterionAssessment, EvaluationDeductionAttribution),
+       backward-compatible EvaluationCriterionScore and EvidenceReference, AuditEvent,
+       and atomically transitions EvaluationJob to 'completed'.
     """
     # 1. Pessimistic Row Lock & In-Lock Guard Verification
     sql_lock = text("""
@@ -359,6 +373,14 @@ def commit_evaluation_result_fenced_sync(
 
     # 2. Insert Authoritative EvaluationResult
     result_id = uuid.uuid4()
+    summary_text = (
+        f"Quick Summary:\n{ai_output.overall_quick_summary}\n\nDetailed Breakdown:\n{ai_output.overall_detailed_summary}"
+        if hasattr(ai_output, "overall_quick_summary")
+        else getattr(ai_output, "summary_assessment", "Evaluation completed.")
+    )
+    has_insufficient_ev = getattr(ai_output, "has_insufficient_evidence", False)
+    policy_ver = getattr(ai_output, "policy_version", "1.0.0")
+
     eval_result = EvaluationResult(
         id=result_id,
         organization_id=claim.organization_id,
@@ -373,8 +395,9 @@ def commit_evaluation_result_fenced_sync(
         prompt_version=prompt_version,
         raw_score=score_result.raw_score,
         normalized_score=score_result.normalized_score,
-        summary_assessment=ai_output.summary_assessment,
-        has_insufficient_evidence=ai_output.has_insufficient_evidence,
+        summary_assessment=summary_text,
+        has_insufficient_evidence=has_insufficient_ev,
+        policy_version=policy_ver,
     )
     db.add(eval_result)
 
@@ -384,35 +407,123 @@ def commit_evaluation_result_fenced_sync(
         for cr in score_result.criterion_scores
     }
 
-    # 3. Insert Criterion Scores & Evidence References
-    for cs in ai_output.criterion_scores:
-        crit_id_str = str(cs.criterion_id)
-        norm_score = norm_map.get(crit_id_str, Decimal("0.0000"))
-        crit_score_id = uuid.uuid4()
-
-        crit_score = EvaluationCriterionScore(
-            id=crit_score_id,
-            evaluation_result_id=result_id,
-            criterion_id=cs.criterion_id,
-            awarded_score=cs.awarded_score,
-            normalized_criterion_score=norm_score,
-            confidence_score=cs.confidence_score,
-            rationale=cs.rationale,
-            evidence_status=cs.evidence_status,
-        )
-        db.add(crit_score)
-
-        for ev in cs.evidence_references:
-            ev_ref = EvidenceReference(
-                id=uuid.uuid4(),
-                criterion_score_id=crit_score_id,
+    # 3. Check for Phase 1 Standardized Output vs Legacy Output
+    if hasattr(ai_output, "criterion_assessments"):
+        # Persist normalized Evidence Records
+        commit_sha = getattr(ai_output, "repository_commit_sha", "unknown")
+        for ev in getattr(ai_output, "evidence_records", []):
+            ev_rec = EvaluationEvidenceRecord(
+                id=ev.evidence_id,
+                evaluation_result_id=result_id,
+                submission_id=claim.submission_id,
+                commit_sha=commit_sha,
+                evidence_type=ev.evidence_type.value if hasattr(ev.evidence_type, "value") else str(ev.evidence_type),
                 file_path=ev.file_path,
                 start_line=ev.start_line,
                 end_line=ev.end_line,
-                snippet=ev.snippet,
-                is_verified_in_repo=True,
+                source_excerpt=ev.source_excerpt or "",
+                commit_ref=ev.commit_ref,
+                verification_status=ev.verification_status.value if hasattr(ev.verification_status, "value") else str(ev.verification_status),
+                confidence=ev.confidence,
+                explanation=ev.explanation or "",
             )
-            db.add(ev_ref)
+            db.add(ev_rec)
+
+        # Persist Criterion Assessments, Deductions, and Backward-Compatible Criterion Scores
+        for ca in ai_output.criterion_assessments:
+            assessment_id = uuid.uuid4()
+            crit_assessment = EvaluationCriterionAssessment(
+                id=assessment_id,
+                evaluation_result_id=result_id,
+                submission_id=claim.submission_id,
+                criterion_id=ca.criterion_id,
+                policy_version=policy_ver,
+                evidence_strength=ca.evidence_strength.value if hasattr(ca.evidence_strength, "value") else str(ca.evidence_strength),
+                raw_score_before_deductions=ca.raw_score_before_deductions,
+                total_deductions=ca.total_deductions,
+                final_criterion_score=ca.final_criterion_score,
+                confidence=ca.confidence,
+                positive_findings=ca.positive_findings,
+                negative_findings=ca.negative_findings,
+                neutral_observations=ca.neutral_observations,
+                missing_evidence_observations=ca.missing_evidence_observations,
+                unresolved_questions=ca.unresolved_questions,
+                score_justification=ca.score_justification,
+            )
+            db.add(crit_assessment)
+
+            for d in ca.deductions:
+                ded_record = EvaluationDeductionAttribution(
+                    id=d.deduction_id,
+                    evaluation_result_id=result_id,
+                    submission_id=claim.submission_id,
+                    criterion_id=d.criterion_id,
+                    issue_description=d.issue_description,
+                    defect_severity=d.defect_severity.value if hasattr(d.defect_severity, "value") else str(d.defect_severity),
+                    relevance_explanation=d.relevance_explanation,
+                    overlap_group_id=d.overlap_group_id,
+                    is_primary_attribution=d.is_primary_attribution,
+                    cross_criterion_justification=d.cross_criterion_justification,
+                    deduction_points=d.deduction_points,
+                    proportionality_rationale=d.proportionality_rationale,
+                )
+                db.add(ded_record)
+
+            # Backward-compatible EvaluationCriterionScore
+            crit_id_str = str(ca.criterion_id)
+            norm_score = norm_map.get(crit_id_str, Decimal("0.0000"))
+            legacy_crit_score_id = uuid.uuid4()
+            legacy_rationale = (
+                f"{ca.score_justification}\n\n"
+                f"Strengths: {'; '.join(ca.positive_findings) if ca.positive_findings else 'None cited.'}\n"
+                f"Weaknesses: {'; '.join(ca.negative_findings) if ca.negative_findings else 'None detected.'}"
+            )
+
+            ev_str_val = getattr(ca.evidence_strength, "value", str(ca.evidence_strength)).upper()
+            legacy_evidence_status = "verified" if ev_str_val in ("STRONG", "MODERATE") else ("missing" if ev_str_val == "INSUFFICIENT" else "partial")
+
+            legacy_crit_score = EvaluationCriterionScore(
+                id=legacy_crit_score_id,
+                evaluation_result_id=result_id,
+                criterion_id=ca.criterion_id,
+                awarded_score=ca.final_criterion_score,
+                normalized_criterion_score=norm_score,
+                confidence_score=ca.confidence,
+                rationale=legacy_rationale,
+                evidence_status=legacy_evidence_status,
+            )
+            db.add(legacy_crit_score)
+
+    elif hasattr(ai_output, "criterion_scores"):
+        # Legacy AIEvaluationOutputPayload handling
+        for cs in ai_output.criterion_scores:
+            crit_id_str = str(cs.criterion_id)
+            norm_score = norm_map.get(crit_id_str, Decimal("0.0000"))
+            crit_score_id = uuid.uuid4()
+
+            crit_score = EvaluationCriterionScore(
+                id=crit_score_id,
+                evaluation_result_id=result_id,
+                criterion_id=cs.criterion_id,
+                awarded_score=cs.awarded_score,
+                normalized_criterion_score=norm_score,
+                confidence_score=cs.confidence_score,
+                rationale=cs.rationale,
+                evidence_status=cs.evidence_status,
+            )
+            db.add(crit_score)
+
+            for ev in cs.evidence_references:
+                ev_ref = EvidenceReference(
+                    id=uuid.uuid4(),
+                    criterion_score_id=crit_score_id,
+                    file_path=ev.file_path,
+                    start_line=ev.start_line,
+                    end_line=ev.end_line,
+                    snippet=ev.snippet,
+                    is_verified_in_repo=True,
+                )
+                db.add(ev_ref)
 
     # 4. Insert Immutable AuditEvent
     audit_event = AuditEvent(
@@ -532,6 +643,7 @@ async def commit_evaluation_result_fenced_async(
         normalized_score=score_result.normalized_score,
         summary_assessment=ai_output.summary_assessment,
         has_insufficient_evidence=ai_output.has_insufficient_evidence,
+        policy_version=getattr(ai_output, "policy_version", "1.0.0"),
     )
     db.add(eval_result)
 
@@ -746,7 +858,7 @@ def run_evaluation_pipeline(
                 "target_branch": context.submission.target_branch,
             },
         )
-        schema = get_evaluation_json_schema()
+        schema = get_standardized_evaluation_json_schema()
 
         # Step 6: Healthcheck & Cooperative Cancellation Check
         heartbeat.check_health()
@@ -755,43 +867,109 @@ def run_evaluation_pipeline(
         if provider_client:
             client = provider_client
         else:
+            model_cfg = context.configuration.get("model") or ""
             prov_name = (
                 context.configuration.get("ai.default_provider")
                 or context.configuration.get("ai_default_provider")
                 or context.configuration.get("provider")
             )
-            if prov_name == "mock" or (not prov_name and settings.SCORVA_ENV == "test"):
+            if (
+                prov_name == "mock"
+                or "mock" in str(model_cfg).lower()
+                or (not prov_name and settings.SCORVA_ENV == "test")
+            ):
                 def _mock_gen(prompt_str, schema_dict):
+                    first_file = next(iter(evidence_index.files.keys())) if evidence_index and evidence_index.files else "src/main.py"
+                    ev_id = str(uuid.uuid4())
+                    midpoint_score = str((context.criteria[0].min_score + context.criteria[0].max_score) / Decimal("2.0")) if context.criteria else "5.00"
+                    f_obj = evidence_index.files.get(first_file) if evidence_index and evidence_index.files else None
+                    if f_obj and f_obj.lines:
+                        end_l = min(4, f_obj.total_lines)
+                        excerpt = f_obj.get_line_range_snippet(1, end_l)
+                    else:
+                        end_l = 1
+                        excerpt = "import os"
                     return {
-                        "summary_assessment": "Automated test static evaluation assessment: code meets baseline requirements.",
+                        "evaluation_id": str(uuid.uuid4()),
+                        "submission_id": str(context.submission.id),
+                        "repository_commit_sha": context.snapshot.commit_sha,
+                        "rubric_version_id": str(context.rubric_version.id),
+                        "policy_version": "1.0.0",
+                        "overall_quick_summary": "The project meets baseline hackathon requirements with working code and clear structure.",
+                        "overall_detailed_summary": "The submission includes working source code, organized directories, and test suites. The code is easy to follow and implements the requested features cleanly.",
                         "has_insufficient_evidence": False,
-                        "criterion_scores": [
+                        "evidence_records": [
+                            {
+                                "evidence_id": ev_id,
+                                "evidence_type": "SOURCE_CODE",
+                                "commit_sha": context.snapshot.commit_sha,
+                                "file_path": first_file,
+                                "start_line": 1,
+                                "end_line": max(1, end_l),
+                                "source_excerpt": excerpt or "entrypoint snippet",
+                                "verification_status": "VERIFIED",
+                                "confidence": "1.00",
+                                "explanation": "Primary repository implementation entrypoint.",
+                            }
+                        ],
+                        "criterion_assessments": [
                             {
                                 "criterion_id": str(c.id),
-                                "awarded_score": str((c.min_score + c.max_score) / Decimal("2.0")),
-                                "confidence_score": "1.00",
-                                "rationale": f"Valid static evaluation rationale for criterion {c.title}.",
-                                "evidence_status": "verified",
-                                "evidence_references": [],
+                                "criterion_title": c.title,
+                                "positive_findings": [f"Working implementation for {c.title} in verified repository files."],
+                                "negative_findings": [],
+                                "neutral_observations": [],
+                                "missing_evidence_observations": [],
+                                "contradictory_evidence_observations": [],
+                                "requirement_coverage": [],
+                                "evidence_strength": "STRONG",
+                                "deductions": [],
+                                "confidence": "1.00",
+                                "unresolved_questions": [],
+                                "raw_score_before_deductions": str((c.min_score + c.max_score) / Decimal("2.0")),
+                                "total_deductions": "0.00",
+                                "final_criterion_score": str((c.min_score + c.max_score) / Decimal("2.0")),
+                                "score_justification": f"Demonstrates solid baseline adherence to {c.title} with clean execution.",
                             }
                             for c in context.criteria
                         ],
                     }
                 client = MockAIProviderClient(default_generator=_mock_gen)
+            elif prov_name == "pi":
+                from apps.api.modules.evaluations.providers.pi.client import PiProviderClient
+                client = PiProviderClient(default_model="gpt-5.6-luna")
             else:
                 client = get_ai_provider_client()
 
-        async def _run_inference() -> AIEvaluationOutputPayload:
-            return await execute_evaluation_with_retry(
-                provider_client=client,
-                prompt=prompt,
-                schema=schema,
-                model_name=model_name,
-                rubric_criteria=context.criteria,
-                evidence_index=evidence_index,
-                timeout_seconds=30.0,
-                max_retries=1,
-            )
+        async def _run_inference():
+            try:
+                return await execute_evaluation_with_retry(
+                    provider_client=client,
+                    prompt=prompt,
+                    schema=schema,
+                    model_name=model_name,
+                    rubric_criteria=context.criteria,
+                    evidence_index=evidence_index,
+                    timeout_seconds=30.0,
+                    max_retries=1,
+                )
+            except (AIProviderConnectionError, AIProviderTimeoutError) as net_err:
+                from apps.api.modules.evaluations.providers.pi.runtime import default_pi_runtime
+                if default_pi_runtime.is_available() and not isinstance(client, MockAIProviderClient):
+                    logger.warning("Primary AI provider encountered network error (%s). Cascading to local Pi AI runtime...", net_err)
+                    from apps.api.modules.evaluations.providers.pi.client import PiProviderClient
+                    pi_client = PiProviderClient(default_model="gpt-5.6-luna")
+                    return await execute_evaluation_with_retry(
+                        provider_client=pi_client,
+                        prompt=prompt,
+                        schema=schema,
+                        model_name="openai-codex/gpt-5.6-luna",
+                        rubric_criteria=context.criteria,
+                        evidence_index=evidence_index,
+                        timeout_seconds=60.0,
+                        max_retries=1,
+                    )
+                raise
 
         ai_output = _safe_run_async(_run_inference())
 
@@ -801,17 +979,30 @@ def run_evaluation_pipeline(
         crit_inputs: List[CriterionInput] = []
         crit_by_id = {str(c.id): c for c in context.criteria}
 
-        for cs in ai_output.criterion_scores:
-            c_meta = crit_by_id[str(cs.criterion_id)]
-            crit_inputs.append(CriterionInput(
-                criterion_id=cs.criterion_id,
-                title=c_meta.title,
-                weight=c_meta.weight,
-                min_score=c_meta.min_score,
-                max_score=c_meta.max_score,
-                awarded_score=cs.awarded_score,
-                confidence_score=cs.confidence_score,
-            ))
+        if hasattr(ai_output, "criterion_assessments"):
+            for ca in ai_output.criterion_assessments:
+                c_meta = crit_by_id[str(ca.criterion_id)]
+                crit_inputs.append(CriterionInput(
+                    criterion_id=ca.criterion_id,
+                    title=c_meta.title,
+                    weight=c_meta.weight,
+                    min_score=c_meta.min_score,
+                    max_score=c_meta.max_score,
+                    awarded_score=ca.final_criterion_score,
+                    confidence_score=ca.confidence,
+                ))
+        elif hasattr(ai_output, "criterion_scores"):
+            for cs in ai_output.criterion_scores:
+                c_meta = crit_by_id[str(cs.criterion_id)]
+                crit_inputs.append(CriterionInput(
+                    criterion_id=cs.criterion_id,
+                    title=c_meta.title,
+                    weight=c_meta.weight,
+                    min_score=c_meta.min_score,
+                    max_score=c_meta.max_score,
+                    awarded_score=cs.awarded_score,
+                    confidence_score=cs.confidence_score,
+                ))
 
         score_result = calculate_evaluation_scores(
             criteria=crit_inputs,

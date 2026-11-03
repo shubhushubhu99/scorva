@@ -33,4 +33,4 @@ def test_alembic_configuration_validity():
     # Phase 4 Milestone 5.1 outbox head
     heads = script.get_heads()
     assert len(heads) == 1
-    assert heads[0] == "d4e5f6a1b2c3"
+    assert heads[0] == "e5f6a1b2c3d4"

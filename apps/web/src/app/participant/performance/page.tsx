@@ -16,6 +16,7 @@ import {
 } from 'lucide-react';
 import { api, ApiClientError } from '@/lib/api-client';
 import { PerformanceResponse, ParticipantTeamItem } from '@/types/api';
+import { DualExplanationView } from '@/components/evaluations/DualExplanationView';
 
 export default function ParticipantPerformancePage() {
   const [performance, setPerformance] = useState<PerformanceResponse | null>(null);
@@ -221,10 +222,13 @@ export default function ParticipantPerformancePage() {
                     </div>
 
                     {/* Rationale feedback */}
-                    {c.rationale && (
-                      <p className="text-xs text-[#475569] bg-white p-3 rounded border border-[#E2E8F0] italic">
-                        &quot;{c.rationale}&quot;
-                      </p>
+                    {(c.quick_explanation || c.rationale) && (
+                      <DualExplanationView
+                        quickExplanation={c.quick_explanation}
+                        detailedExplanation={c.detailed_explanation}
+                        rawText={c.rationale}
+                        compact
+                      />
                     )}
                   </div>
                 ))}
@@ -233,7 +237,7 @@ export default function ParticipantPerformancePage() {
           </div>
 
           {/* AI Transparency Summary */}
-          {performance.ai_summary && (
+          {(performance.ai_quick_summary || performance.ai_summary) && (
             <div className="bg-white border border-[#E2E8F0] rounded-xl p-6 shadow-xs space-y-3">
               <div className="flex items-center gap-2 pb-3 border-b border-[#E2E8F0]">
                 <Cpu className="w-4 h-4 text-[#2563EB]" />
@@ -241,9 +245,11 @@ export default function ParticipantPerformancePage() {
                   AI Assessment & Verification Highlights
                 </h3>
               </div>
-              <p className="text-xs text-[#475569] leading-relaxed whitespace-pre-line bg-[#F8FAFC] p-4 rounded-lg border border-[#E2E8F0]">
-                {performance.ai_summary}
-              </p>
+              <DualExplanationView
+                quickExplanation={performance.ai_quick_summary}
+                detailedExplanation={performance.ai_detailed_summary}
+                rawText={performance.ai_summary}
+              />
             </div>
           )}
 

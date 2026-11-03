@@ -82,6 +82,9 @@ export interface UserProfile {
   routing?: UserRoutingProfile;
   created_at?: string;
   last_login_at?: string | null;
+  judge_access_code?: string | null;
+  judge_hackathon_title?: string | null;
+  temporary_password?: string | null;
 }
 
 export interface PaginatedUsersResponse {
@@ -443,6 +446,28 @@ export interface AdminCreateUserRequest {
   platform_role?: PlatformRole | null;
   organization_id?: string;
   org_role?: string;
+  hackathon_id?: string;
+  is_judge?: boolean;
+}
+
+export interface AdminJudgeItem {
+  id: string;
+  hackathon_id: string;
+  hackathon_title: string;
+  organization_name?: string | null;
+  user_id: string;
+  email: string;
+  full_name: string;
+  access_code: string;
+  created_at: string;
+  temporary_password?: string | null;
+}
+
+export interface AdminCreateJudgeRequest {
+  full_name: string;
+  email: string;
+  password?: string;
+  access_code?: string;
 }
 
 export interface UpdateMemberRoleRequest {
@@ -873,6 +898,8 @@ export interface CriterionScoreDetail {
   normalized_criterion_score: number | string;
   confidence_score: number | string;
   rationale: string;
+  quick_explanation?: string | null;
+  detailed_explanation?: string | null;
   evidence_status: 'verified' | 'partial' | 'missing';
   evidence_references: EvidenceReferenceDetail[];
 }
@@ -886,6 +913,8 @@ export interface EvaluationResultDetail {
   raw_score: number | string;
   normalized_score: number | string;
   summary_assessment: string;
+  quick_summary?: string | null;
+  detailed_summary?: string | null;
   has_insufficient_evidence: boolean;
   created_at: string;
   criterion_scores: CriterionScoreDetail[];
@@ -1024,6 +1053,12 @@ export interface SubmitJudgeReviewRequest {
   version?: number | null;
 }
 
+export interface RevertJudgeReviewRequest {
+  target_status?: 'draft' | 'awaiting';
+  reason?: string | null;
+  target_judge_user_id?: string | null;
+}
+
 export interface JudgeCriterionScoreDetail {
   id?: string | null;
   criterion_id: string;
@@ -1035,6 +1070,8 @@ export interface JudgeCriterionScoreDetail {
   judge_notes?: string | null;
   ai_suggested_score?: number | string | null;
   ai_rationale?: string | null;
+  ai_quick_explanation?: string | null;
+  ai_detailed_explanation?: string | null;
 }
 
 export interface JudgeReviewDetail {
@@ -1144,6 +1181,65 @@ export interface SubmissionCoverageItem {
   submitted_reviews_count: number;
   draft_reviews_count: number;
   average_human_score?: number | string | null;
+}
+
+export interface InnovationData {
+  score: number;
+  summary: string;
+  novel_elements: string[];
+  competitive_differentiation?: string | null;
+}
+
+export interface TechStackData {
+  languages: string[];
+  frameworks: string[];
+  databases: string[];
+  ai_ml_tools: string[];
+  devops_cloud: string[];
+  apis_integrations: string[];
+}
+
+export interface ComplexityData {
+  level: string;
+  score: number;
+  architecture_depth?: string | null;
+  algorithmic_challenges?: string | null;
+  data_flow_complexity?: string | null;
+}
+
+export interface JudgeFactorsData {
+  code_quality_score: number;
+  code_quality_summary?: string | null;
+  completeness_score: number;
+  completeness_summary?: string | null;
+  is_working_demo: boolean;
+  potential_impact_score: number;
+  potential_impact_summary?: string | null;
+  security_summary?: string | null;
+}
+
+export interface OllamaRepoInspectionResponse {
+  id?: string | null;
+  submission_id: string;
+  hackathon_id: string;
+  model_name: string;
+  status: string;
+  project_name: string;
+  quick_summary?: string | null;
+  what_is_building: string;
+  exact_overview?: string | null;
+  innovation: InnovationData;
+  tech_stack: TechStackData;
+  complexity: ComplexityData;
+  judge_factors: JudgeFactorsData;
+  key_highlights: string[];
+  potential_red_flags: string[];
+  codebase_defects?: string[];
+  missing_implementations?: string[];
+  recommended_improvements?: string[];
+  suggested_judge_questions: string[];
+  created_at?: string | null;
+  cached?: boolean;
 }
 
 export interface OrganizerReviewProgressResponse {
@@ -1281,6 +1377,8 @@ export interface ParticipantOverviewResponse {
   stages: LifecycleStageItem[];
   recent_updates: Array<Record<string, any>>;
   upcoming_deadlines: Array<Record<string, any>>;
+  pat_status?: ParticipantPatTokenStatus | null;
+  github_settings?: ParticipantGitHubSettingsResponse | null;
 }
 
 export interface LeaderboardEntry {
@@ -1308,6 +1406,8 @@ export interface CriterionBreakdownItem {
   weight: number;
   progress_percentage: number;
   rationale?: string | null;
+  quick_explanation?: string | null;
+  detailed_explanation?: string | null;
 }
 
 export interface PerformanceResponse {
@@ -1324,6 +1424,8 @@ export interface PerformanceResponse {
   criteria_breakdown: CriterionBreakdownItem[];
   authorized_feedback: string[];
   ai_summary?: string | null;
+  ai_quick_summary?: string | null;
+  ai_detailed_summary?: string | null;
 }
 
 export interface ParticipantTaskItem {
@@ -1475,6 +1577,7 @@ export interface ParticipantProjectRegistrationRequest {
   agreement_accepted: boolean;
   hackathon_id?: string | null;
   team_id?: string | null;
+  pat_token?: string | null;
 }
 
 export interface ProjectRegistrationSuccessResponse {
@@ -1484,6 +1587,8 @@ export interface ProjectRegistrationSuccessResponse {
   team_name: string;
   team_number: string;
   project_title: string;
+  is_verified?: boolean;
+  verified_commit_sha?: string | null;
 }
 
 export interface ParticipantPatTokenStatus {
@@ -1505,6 +1610,9 @@ export interface SaveParticipantPatResponse {
   token_masked: string;
   is_verified: boolean;
   verified_username?: string | null;
+  repository_verified?: boolean;
+  verified_commit_sha?: string | null;
+  default_branch?: string | null;
 }
 
 export interface ParticipantGitHubSettingsResponse {
@@ -1531,6 +1639,271 @@ export interface VerifyParticipantGitHubResponse {
   verified_at: string;
   verified_by_user?: string | null;
 }
+
+export interface AIEndpointConfig {
+  id: string;
+  name: string;
+  url: string;
+  role: 'primary' | 'secondary' | 'disabled';
+  is_enabled: boolean;
+  model_name?: string | null;
+  timeout_seconds: number;
+  is_custom?: boolean;
+}
+
+export interface AIRoutingConfigRequest {
+  endpoints: AIEndpointConfig[];
+  primary_endpoint_id?: string | null;
+  secondary_endpoint_id?: string | null;
+}
+
+export interface AIRoutingConfigResponse {
+  endpoints: AIEndpointConfig[];
+  primary_endpoint_id?: string | null;
+  secondary_endpoint_id?: string | null;
+  primary_url?: string | null;
+  secondary_url?: string | null;
+  primary_enabled: boolean;
+  secondary_enabled: boolean;
+  primary_model?: string | null;
+  secondary_model?: string | null;
+  updated_at?: string | null;
+}
+
+export interface AIEndpointProbeResponse {
+  url: string;
+  is_online: boolean;
+  latency_ms?: number | null;
+  version?: string | null;
+  available_models: string[];
+  error_message?: string | null;
+}
+
+export interface AIOperationsStatsResponse {
+  total_inspections: number;
+  primary_used_count: number;
+  secondary_used_count: number;
+  fallback_used_count: number;
+  recent_inspections: Array<{
+    id: string;
+    submission_id: string;
+    project_name?: string | null;
+    model_name?: string | null;
+    source: string;
+    status: string;
+    quick_summary?: string | null;
+    created_at?: string | null;
+  }>;
+}
+
+// ==============================================================================
+// AI Operations Control Center Types
+// ==============================================================================
+
+export interface ProviderStatusItem {
+  name: string;
+  display_name: string;
+  is_available: boolean;
+  connection_status: 'connected' | 'offline' | 'untested' | 'degraded';
+  version?: string | null;
+  config_path_or_url?: string | null;
+  last_successful_execution_at?: string | null;
+  last_error?: string | null;
+  total_models: number;
+}
+
+export interface PiRuntimeStatus {
+  is_installed: boolean;
+  executable_path?: string | null;
+  version?: string | null;
+  config_dir: string;
+  models_store_exists: boolean;
+  auth_store_exists: boolean;
+  default_provider?: string | null;
+  default_model?: string | null;
+  configured_providers: string[];
+  total_discovered_models: number;
+}
+
+export interface AIRuntimeOverviewResponse {
+  providers: ProviderStatusItem[];
+  pi_status: PiRuntimeStatus;
+  global_max_concurrency: number;
+  default_timeout_seconds: number;
+  default_provider: string;
+  default_model: string;
+  updated_at: string;
+}
+
+export interface AIRuntimeSettingsUpdate {
+  global_max_concurrency?: number;
+  default_timeout_seconds?: number;
+  default_provider?: string;
+  default_model?: string;
+}
+
+export interface AIModelItem {
+  id: string;
+  provider: string;
+  model_id: string;
+  display_name: string;
+  context_window?: number | null;
+  max_tokens?: number | null;
+  input_cost?: number | null;
+  output_cost?: number | null;
+  capabilities?: {
+    reasoning?: boolean;
+    modalities?: string[];
+  } | null;
+  is_available: boolean;
+  is_enabled: boolean;
+  is_default: boolean;
+  assigned_tasks_count: number;
+  last_tested_at?: string | null;
+  last_test_status?: 'success' | 'failed' | 'untested' | null;
+  last_test_latency_ms?: number | null;
+  last_test_error?: string | null;
+}
+
+export interface AIModelUpdatePayload {
+  is_enabled?: boolean;
+  display_name?: string;
+}
+
+export interface DefaultModelSwitchPayload {
+  provider: string;
+  model_id: string;
+}
+
+export interface FallbackModelItem {
+  provider: string;
+  model_id: string;
+  priority: number;
+}
+
+export interface TaskRoutingAssignment {
+  task_type: string;
+  name: string;
+  description?: string | null;
+  is_enabled: boolean;
+  primary_provider: string;
+  primary_model: string;
+  secondary_provider?: string | null;
+  secondary_model?: string | null;
+  fallback_models: FallbackModelItem[];
+  timeout_seconds: number;
+  max_retries: number;
+  parallel_enabled: boolean;
+  priority: number;
+}
+
+export interface TaskRoutingUpdatePayload {
+  is_enabled?: boolean;
+  primary_provider?: string;
+  primary_model?: string;
+  secondary_provider?: string;
+  secondary_model?: string;
+  fallback_models?: FallbackModelItem[];
+  timeout_seconds?: number;
+  max_retries?: number;
+  parallel_enabled?: boolean;
+  priority?: number;
+}
+
+export interface AIExecutionRecordSummary {
+  id: string;
+  evaluation_id?: string | null;
+  submission_id?: string | null;
+  task_type: string;
+  primary_provider: string;
+  primary_model: string;
+  actual_provider: string;
+  actual_model: string;
+  status: 'completed' | 'fallback_used' | 'failed' | 'running';
+  fallback_used: boolean;
+  fallback_reason?: string | null;
+  attempt_count: number;
+  duration_ms: number;
+  total_tokens?: number | null;
+  estimated_cost?: number | null;
+  validation_passed: boolean;
+  error_message?: string | null;
+  created_at: string;
+}
+
+export interface AIExecutionRecordDetail extends AIExecutionRecordSummary {
+  prompt_tokens?: number | null;
+  completion_tokens?: number | null;
+  prompt_preview?: string | null;
+  output_payload?: Record<string, unknown> | null;
+  validation_errors?: Record<string, unknown> | null;
+  started_at?: string | null;
+  completed_at?: string | null;
+}
+
+export interface AIExecutionListResponse {
+  total: number;
+  items: AIExecutionRecordSummary[];
+  page: number;
+  page_size: number;
+}
+
+export interface AIOperationsControlCenterStats {
+  available_models: number;
+  enabled_models: number;
+  active_executions: number;
+  successful_executions: number;
+  failed_executions: number;
+  fallback_executions: number;
+  average_execution_time_ms: number;
+  total_tokens_consumed?: number | null;
+  estimated_total_cost?: number | null;
+  average_tokens_per_eval?: number | null;
+  recent_executions: AIExecutionRecordSummary[];
+}
+
+export interface PiModelTestRequest {
+  provider: string;
+  model_id: string;
+  prompt?: string | null;
+  is_structured?: boolean;
+}
+
+export interface PiModelTestResponse {
+  success: boolean;
+  provider: string;
+  model_id: string;
+  prompt: string;
+  response_text: string;
+  structured_output?: Record<string, unknown> | null;
+  duration_ms: number;
+  usage?: {
+    input?: number;
+    output?: number;
+    total_tokens?: number;
+    cost?: {
+      total?: number;
+    };
+  } | null;
+  error_message?: string | null;
+  validation_passed: boolean;
+}
+
+export interface ParallelTaskExecutionRequest {
+  tasks: string[];
+  test_context?: string | null;
+}
+
+export interface ParallelTaskExecutionResponse {
+  correlation_id: string;
+  total_tasks: number;
+  successful_tasks: number;
+  failed_tasks: number;
+  total_duration_ms: number;
+  task_results: Record<string, unknown>;
+  executions: AIExecutionRecordSummary[];
+}
+
 
 
 

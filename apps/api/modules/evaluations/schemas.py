@@ -1,6 +1,6 @@
 from datetime import datetime
 from decimal import Decimal
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 import uuid
 from pydantic import BaseModel, ConfigDict, Field
 from apps.api.modules.evaluations.scoring_calculator import ScoringMode
@@ -257,6 +257,8 @@ class CriterionScoreDetail(BaseModel):
     normalized_criterion_score: Decimal
     confidence_score: Decimal
     rationale: str
+    quick_explanation: Optional[str] = None
+    detailed_explanation: Optional[str] = None
     evidence_status: str
     evidence_references: List[EvidenceReferenceDetail] = []
 
@@ -272,6 +274,8 @@ class EvaluationResultDetail(BaseModel):
     raw_score: Decimal
     normalized_score: Decimal
     summary_assessment: str
+    quick_summary: Optional[str] = None
+    detailed_summary: Optional[str] = None
     has_insufficient_evidence: bool
     created_at: datetime
     criterion_scores: List[CriterionScoreDetail] = []
@@ -410,6 +414,22 @@ class SubmitJudgeReviewRequest(BaseModel):
     version: Optional[int] = Field(None, description="Optimistic concurrency control version")
 
 
+class RevertJudgeReviewRequest(BaseModel):
+    target_status: Literal["draft", "awaiting"] = Field(
+        default="draft",
+        description="Target status after reversion: 'draft' for re-evaluation (preserves scores for editing), or 'awaiting' to reset review completely.",
+    )
+    reason: Optional[str] = Field(
+        default=None,
+        max_length=1000,
+        description="Optional justification or reason for reverting the submitted review.",
+    )
+    target_judge_user_id: Optional[uuid.UUID] = Field(
+        default=None,
+        description="Optional judge user ID when an organizer or administrator is reverting on behalf of a judge.",
+    )
+
+
 class JudgeCriterionScoreDetail(BaseModel):
     id: Optional[uuid.UUID] = None
     criterion_id: uuid.UUID
@@ -421,6 +441,8 @@ class JudgeCriterionScoreDetail(BaseModel):
     judge_notes: Optional[str] = None
     ai_suggested_score: Optional[Decimal] = None
     ai_rationale: Optional[str] = None
+    ai_quick_explanation: Optional[str] = None
+    ai_detailed_explanation: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -575,5 +597,71 @@ class SubmissionReviewsResponse(BaseModel):
     reviews: List[JudgeReviewDetail] = Field(default_factory=list)
 
     model_config = ConfigDict(from_attributes=True)
+
+
+# ==============================================================================
+# Ollama Repository Deep Inspection Schemas
+# ==============================================================================
+
+class InnovationData(BaseModel):
+    score: float = Field(..., ge=0.0, le=10.0, description="Innovation score out of 10")
+    summary: str = Field(..., description="Synthesis of the project's novel aspects")
+    novel_elements: List[str] = Field(default_factory=list, description="Specific innovative elements")
+    competitive_differentiation: Optional[str] = Field(None, description="Differentiation from standard solutions")
+
+
+class TechStackData(BaseModel):
+    languages: List[str] = Field(default_factory=list)
+    frameworks: List[str] = Field(default_factory=list)
+    databases: List[str] = Field(default_factory=list)
+    ai_ml_tools: List[str] = Field(default_factory=list)
+    devops_cloud: List[str] = Field(default_factory=list)
+    apis_integrations: List[str] = Field(default_factory=list)
+
+
+class ComplexityData(BaseModel):
+    level: str = Field("Medium", description="Low, Medium, High, or Very High")
+    score: float = Field(..., ge=0.0, le=10.0, description="Complexity score out of 10")
+    architecture_depth: Optional[str] = Field(None, description="Assessment of architecture layering and design")
+    algorithmic_challenges: Optional[str] = Field(None, description="Algorithmic or logic complexity")
+    data_flow_complexity: Optional[str] = Field(None, description="Data movement and transformation assessment")
+
+
+class JudgeFactorsData(BaseModel):
+    code_quality_score: float = Field(..., ge=0.0, le=10.0)
+    code_quality_summary: Optional[str] = None
+    completeness_score: float = Field(..., ge=0.0, le=10.0)
+    completeness_summary: Optional[str] = None
+    is_working_demo: bool = True
+    potential_impact_score: float = Field(..., ge=0.0, le=10.0)
+    potential_impact_summary: Optional[str] = None
+    security_summary: Optional[str] = None
+
+
+class OllamaRepoInspectionResponse(BaseModel):
+    id: Optional[uuid.UUID] = None
+    submission_id: uuid.UUID
+    hackathon_id: uuid.UUID
+    model_name: str = "qwen2.5:3b"
+    status: str = "completed"
+    project_name: str
+    quick_summary: Optional[str] = None
+    what_is_building: str
+    exact_overview: Optional[str] = None
+    innovation: InnovationData
+    tech_stack: TechStackData
+    complexity: ComplexityData
+    judge_factors: JudgeFactorsData
+    key_highlights: List[str] = Field(default_factory=list)
+    potential_red_flags: List[str] = Field(default_factory=list)
+    codebase_defects: List[str] = Field(default_factory=list, description="Defects, bugs, and negative points found in the repository")
+    missing_implementations: List[str] = Field(default_factory=list, description="Incomplete features, missing error handling, and unhandled edge cases")
+    recommended_improvements: List[str] = Field(default_factory=list, description="Actionable technical improvements to fix identified defects")
+    suggested_judge_questions: List[str] = Field(default_factory=list)
+    created_at: Optional[datetime] = None
+    cached: Optional[bool] = False
+
+    model_config = ConfigDict(from_attributes=True)
+
 
 

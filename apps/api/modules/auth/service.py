@@ -11,6 +11,7 @@ from apps.api.modules.organizations.models import (
     Organization,
     OrganizationMembership,
     OrganizationStatus,
+    OrgRole,
 )
 from apps.api.modules.users.models import PlatformRole, User
 
@@ -140,8 +141,19 @@ async def resolve_user_routing(db: AsyncSession, user: User) -> UserRoutingProfi
     # Resolve deterministic default destination
     if user.platform_role:
         default_dest = "/admin"
+    elif judge_rows and not org_rows:
+        default_dest = "/judge"
     elif org_rows:
-        default_dest = f"/organizations/{org_rows[0][1].id}"
+        # Check if the user is primarily an event participant (in a team and not org owner/admin)
+        is_org_leader = any(
+            mem.role in (OrgRole.ORG_OWNER, OrgRole.ORG_ADMIN)
+            or (hasattr(mem.role, "value") and mem.role.value in ("org_owner", "org_admin"))
+            for mem, org in org_rows
+        )
+        if team_rows and not is_org_leader:
+            default_dest = "/participant"
+        else:
+            default_dest = f"/organizations/{org_rows[0][1].id}"
     elif judge_rows:
         default_dest = "/judge"
     else:

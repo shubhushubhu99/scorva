@@ -42,6 +42,7 @@ from apps.api.modules.evaluations.schemas import (
     sanitize_error_for_display,
 )
 from apps.api.modules.evaluations.outbox import OutboxStatus
+from apps.api.modules.evaluations.output_validator import parse_explanations
 from apps.api.modules.evaluations.scoring_calculator import (
     CriterionInput,
     ScoringMode,
@@ -1290,6 +1291,7 @@ async def get_submission_evaluation_detail(
                     )
                     for ev in ev_models
                 ]
+                q_exp, d_exp = parse_explanations(cs.rationale)
                 criterion_scores.append(
                     CriterionScoreDetail(
                         id=cs.id,
@@ -1304,11 +1306,14 @@ async def get_submission_evaluation_detail(
                         normalized_criterion_score=cs.normalized_criterion_score,
                         confidence_score=cs.confidence_score,
                         rationale=cs.rationale,
+                        quick_explanation=q_exp,
+                        detailed_explanation=d_exp,
                         evidence_status=cs.evidence_status,
                         evidence_references=evidence_refs,
                     )
                 )
 
+            q_sum, d_sum = parse_explanations(res_model.summary_assessment)
             result_detail = EvaluationResultDetail(
                 id=res_model.id,
                 attempt_number=res_model.attempt_number,
@@ -1318,6 +1323,8 @@ async def get_submission_evaluation_detail(
                 raw_score=res_model.raw_score,
                 normalized_score=res_model.normalized_score,
                 summary_assessment=res_model.summary_assessment,
+                quick_summary=q_sum,
+                detailed_summary=d_sum,
                 has_insufficient_evidence=res_model.has_insufficient_evidence,
                 created_at=res_model.created_at,
                 criterion_scores=criterion_scores,

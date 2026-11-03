@@ -27,6 +27,7 @@ from apps.api.modules.configuration.router import router as configuration_router
 from apps.api.modules.evaluations.router import router as evaluations_router
 from apps.api.modules.evaluations.judge_router import router as judge_router
 from apps.api.modules.evaluations.participant_router import router as participant_router
+from apps.api.modules.evaluations.ai_operations_router import router as ai_operations_router
 from apps.api.modules.hackathons.admin_router import router as admin_hackathons_router
 from apps.api.modules.hackathons.router import router as hackathons_router
 from apps.api.modules.health.router import router as health_router
@@ -107,6 +108,7 @@ def create_app() -> FastAPI:
     app.include_router(webhook_router, prefix=settings.API_V1_PREFIX)
     app.include_router(dashboard_router, prefix=settings.API_V1_PREFIX)
     app.include_router(admin_support_router, prefix=settings.API_V1_PREFIX)
+    app.include_router(ai_operations_router, prefix=settings.API_V1_PREFIX)
 
     @app.get("/metrics", tags=["Observability"])
     async def metrics_root(request: Request, format: Optional[str] = None) -> Response:

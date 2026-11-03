@@ -9,6 +9,10 @@ class Settings(BaseSettings):
 
     # General Environment
     SCORVA_ENV: Literal["development", "test", "staging", "production"] = "development"
+
+    @property
+    def ENVIRONMENT(self) -> str:
+        return self.SCORVA_ENV
     DEBUG: bool = True
     PORT: int = 8000
     HOST: str = "0.0.0.0"
@@ -43,7 +47,10 @@ class Settings(BaseSettings):
     # Dependencies (Configured for future phases)
     DATABASE_URL: str = "postgresql+asyncpg://scorva:scorva_dev_password@localhost:5432/scorva"
     REDIS_URL: str = "redis://localhost:6379/0"
-    OLLAMA_BASE_URL: str = "http://localhost:11434"
+    OLLAMA_PRIMARY_URL: str = "http://10.3.2.157:11434"
+    OLLAMA_SECONDARY_REMOTE_URL: str = "http://10.3.2.158:11434"
+    OLLAMA_FALLBACK_URL: str = "http://localhost:11434"
+    OLLAMA_BASE_URL: str = "http://10.3.2.157:11434"
     S3_ENDPOINT_URL: str = "http://localhost:9000"
     SUPPORT_ATTACHMENT_DIR: str = "storage/support-attachments"
 

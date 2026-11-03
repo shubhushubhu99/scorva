@@ -16,6 +16,7 @@ import {
   Loader2,
   Users,
   Key,
+  Award,
 } from 'lucide-react';
 import { api, ApiClientError } from '@/lib/api-client';
 import { useAuth } from '@/lib/auth-context';
@@ -28,10 +29,11 @@ function LoginForm() {
   const { user, refreshUser } = useAuth();
 
   const [step, setStep] = useState<AuthStep>('credentials');
-  const [loginMode, setLoginMode] = useState<'participant' | 'staff'>('participant');
+  const [loginMode, setLoginMode] = useState<'participant' | 'judge' | 'staff'>('participant');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [teamCode, setTeamCode] = useState('');
+  const [judgeCode, setJudgeCode] = useState('');
   const [totpCode, setTotpCode] = useState('');
   const [token, setToken] = useState(''); // challenge or enrollment token
   const [mfaSecret, setMfaSecret] = useState('');
@@ -40,13 +42,26 @@ function LoginForm() {
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
-  // If already authenticated, redirect to user default destination
+  // If already authenticated, redirect to appropriate destination
   useEffect(() => {
     if (user) {
+      const redirectParam = searchParams.get('redirect') || searchParams.get('return_to');
+      if (redirectParam) {
+        router.push(redirectParam);
+        return;
+      }
+      if (loginMode === 'participant') {
+        router.push('/participant');
+        return;
+      }
+      if (loginMode === 'judge') {
+        router.push('/judge');
+        return;
+      }
       const destination = user.routing?.default_destination || (user.platform_role ? '/admin' : '/participant');
       router.push(destination);
     }
-  }, [user, router]);
+  }, [user, router, searchParams, loginMode]);
 
   // Check for expired session notice
   useEffect(() => {
@@ -64,15 +79,26 @@ function LoginForm() {
       return;
     }
 
+    if (loginMode === 'judge' && !judgeCode.trim()) {
+      setError('Please enter your Judge Access Code provided by your hackathon administrator.');
+      return;
+    }
+
     setIsSubmitting(true);
 
     try {
-      const redirectParam = searchParams.get('redirect') || searchParams.get('return_to') || undefined;
+      const redirectParam = loginMode === 'participant'
+        ? '/participant'
+        : loginMode === 'judge'
+        ? '/judge'
+        : searchParams.get('redirect') || searchParams.get('return_to') || undefined;
+
       const response = await api.login(
         email.trim(),
         password,
         redirectParam,
-        loginMode === 'participant' ? teamCode.trim().toUpperCase() : undefined
+        loginMode === 'participant' ? teamCode.trim().toUpperCase() : undefined,
+        loginMode === 'judge' ? judgeCode.trim().toUpperCase() : undefined
       );
 
       if (response.mfa_required) {
@@ -94,9 +120,13 @@ function LoginForm() {
         } else {
           await refreshUser();
         }
-        const target = ('default_destination' in response && response.default_destination)
-          ? response.default_destination
-          : (('user' in response && response.user?.routing?.default_destination) || '/participant');
+        const target = loginMode === 'participant'
+          ? '/participant'
+          : loginMode === 'judge'
+          ? '/judge'
+          : (('default_destination' in response && response.default_destination)
+              ? response.default_destination
+              : (('user' in response && response.user?.routing?.default_destination) || '/participant'));
         router.push(target);
       }
     } catch (err: unknown) {
@@ -173,22 +203,37 @@ function LoginForm() {
 
         {/* Card Container */}
         <div className="bg-surface border border-surface-border rounded-xl shadow-surface-elevated p-6 sm:p-8 backdrop-blur-sm">
-          {/* Mode Tabs: Participant vs Staff */}
-          <div className="grid grid-cols-2 gap-1 p-1 bg-surface-elevated border border-surface-border rounded-lg mb-6">
+          {/* Mode Tabs: Participant vs Judge vs Staff */}
+          <div className="grid grid-cols-3 gap-1 p-1 bg-surface-elevated border border-surface-border rounded-lg mb-6">
             <button
               type="button"
               onClick={() => {
                 setLoginMode('participant');
                 setError(null);
               }}
-              className={`py-2 px-3 rounded-md text-xs font-semibold flex items-center justify-center gap-1.5 transition-all ${
+              className={`py-2 px-2 rounded-md text-xs font-semibold flex items-center justify-center gap-1.5 transition-all ${
                 loginMode === 'participant'
                   ? 'bg-primary text-white shadow-xs'
                   : 'text-text-muted hover:text-text-primary'
               }`}
             >
               <Users className="w-3.5 h-3.5" />
-              <span>Participant Access</span>
+              <span>Participant</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setLoginMode('judge');
+                setError(null);
+              }}
+              className={`py-2 px-2 rounded-md text-xs font-semibold flex items-center justify-center gap-1.5 transition-all ${
+                loginMode === 'judge'
+                  ? 'bg-primary text-white shadow-xs'
+                  : 'text-text-muted hover:text-text-primary'
+              }`}
+            >
+              <Award className="w-3.5 h-3.5" />
+              <span>Judge Access</span>
             </button>
             <button
               type="button"
@@ -196,14 +241,14 @@ function LoginForm() {
                 setLoginMode('staff');
                 setError(null);
               }}
-              className={`py-2 px-3 rounded-md text-xs font-semibold flex items-center justify-center gap-1.5 transition-all ${
+              className={`py-2 px-2 rounded-md text-xs font-semibold flex items-center justify-center gap-1.5 transition-all ${
                 loginMode === 'staff'
                   ? 'bg-primary text-white shadow-xs'
                   : 'text-text-muted hover:text-text-primary'
               }`}
             >
               <Shield className="w-3.5 h-3.5" />
-              <span>Organizer / Staff</span>
+              <span>Staff / Admin</span>
             </button>
           </div>
 
@@ -223,7 +268,11 @@ function LoginForm() {
             <form onSubmit={handleCredentialsSubmit} className="space-y-4">
               <div>
                 <label className="block text-xs font-medium text-text-secondary mb-1.5">
-                  {loginMode === 'participant' ? 'Participant Email Address' : 'Staff Email Address'}
+                  {loginMode === 'participant'
+                    ? 'Participant Email Address'
+                    : loginMode === 'judge'
+                    ? 'Judge Email Address'
+                    : 'Staff / Admin Email Address'}
                 </label>
                 <div className="relative">
                   <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-text-muted">
@@ -234,7 +283,13 @@ function LoginForm() {
                     required
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}
-                    placeholder={loginMode === 'participant' ? 'participant@scorva.io' : 'admin@scorva.io'}
+                    placeholder={
+                      loginMode === 'participant'
+                        ? 'participant@scorva.io'
+                        : loginMode === 'judge'
+                        ? 'judge@scorva.io'
+                        : 'admin@scorva.io'
+                    }
                     className="w-full pl-9 pr-3.5 py-2.5 bg-surface-elevated border border-surface-border rounded-lg text-sm text-text-primary placeholder:text-text-muted/60 focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary transition-colors"
                   />
                 </div>
@@ -284,6 +339,32 @@ function LoginForm() {
                 </div>
               )}
 
+              {/* Judge Code Input for Judges */}
+              {loginMode === 'judge' && (
+                <div className="p-3 bg-primary/5 border border-primary/20 rounded-lg space-y-1.5">
+                  <label className="block text-xs font-semibold text-text-primary flex items-center justify-between">
+                    <span>Judge Access Code <span className="text-status-danger">*</span></span>
+                    <span className="text-[10px] text-primary font-medium">Provided by Super Admin</span>
+                  </label>
+                  <div className="relative">
+                    <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-primary">
+                      <Key className="w-4 h-4" />
+                    </div>
+                    <input
+                      type="text"
+                      required
+                      value={judgeCode}
+                      onChange={(e) => setJudgeCode(e.target.value.toUpperCase())}
+                      placeholder="e.g. JDG-A7E94B12"
+                      className="w-full pl-9 pr-3.5 py-2 bg-surface border border-surface-border rounded-lg text-sm font-mono uppercase tracking-widest text-text-primary placeholder:tracking-normal placeholder:font-sans placeholder:text-text-muted/60 focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary transition-colors"
+                    />
+                  </div>
+                  <p className="text-[11px] text-text-muted leading-tight">
+                    Enter the access code generated for your assigned hackathon event. A valid code is required to enter the evaluation dashboard.
+                  </p>
+                </div>
+              )}
+
               <div className="pt-2">
                 <button
                   type="submit"
@@ -293,11 +374,23 @@ function LoginForm() {
                   {isSubmitting ? (
                     <>
                       <Loader2 className="w-4 h-4 animate-spin" />
-                      <span>{loginMode === 'participant' ? 'Verifying Code & Authenticating...' : 'Authenticating...'}</span>
+                      <span>
+                        {loginMode === 'participant'
+                          ? 'Verifying Code & Authenticating...'
+                          : loginMode === 'judge'
+                          ? 'Verifying Judge Code & Entering...'
+                          : 'Authenticating...'}
+                      </span>
                     </>
                   ) : (
                     <>
-                      <span>{loginMode === 'participant' ? 'Enter Event Dashboard' : 'Sign In'}</span>
+                      <span>
+                        {loginMode === 'participant'
+                          ? 'Enter Event Dashboard'
+                          : loginMode === 'judge'
+                          ? 'Enter Judge Evaluation Dashboard'
+                          : 'Sign In'}
+                      </span>
                       <ArrowRight className="w-4 h-4" />
                     </>
                   )}
@@ -339,15 +432,16 @@ function LoginForm() {
                   <button
                     type="button"
                     onClick={() => {
-                      setLoginMode('staff');
+                      setLoginMode('judge');
                       setEmail('judge@scorva.io');
                       setPassword('Password123!');
+                      setJudgeCode('JDG-GRAVITON1');
                       setError(null);
                     }}
                     className="p-2 text-left bg-surface-elevated hover:bg-surface-border/50 border border-surface-border rounded-lg transition-colors cursor-pointer"
                   >
                     <div className="font-medium text-text-primary truncate">judge@scorva.io</div>
-                    <div className="text-[10px] text-text-muted mt-0.5">Judge (Staff)</div>
+                    <div className="text-[10px] text-primary mt-0.5">Judge (Code: JDG-GRAVITON1)</div>
                   </button>
                   <button
                     type="button"
@@ -360,7 +454,7 @@ function LoginForm() {
                     className="p-2 text-left bg-surface-elevated hover:bg-surface-border/50 border border-surface-border rounded-lg transition-colors cursor-pointer"
                   >
                     <div className="font-medium text-text-primary truncate">participant@scorva.io</div>
-                    <div className="text-[10px] text-text-muted mt-0.5">Participant (Code Required)</div>
+                    <div className="text-[10px] text-text-muted mt-0.5">Participant (Team Code)</div>
                   </button>
                 </div>
               </div>

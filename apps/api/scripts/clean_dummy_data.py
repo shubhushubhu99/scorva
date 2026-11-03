@@ -1,104 +1,238 @@
 """
-Clean all dummy, test, and mock data from the Scorva database.
-Leaves only the standard system roles, permissions, base configuration,
-and seeds a clean Super Admin account (admin@scorva.io / Password123!).
+Utility to purge dummy test records and restore the platform database to a pristine, clean state.
+Preserves real tenant organizations, real hackathons, real participant registrations, and core admin accounts.
 """
 import asyncio
-import os
-import sys
-from sqlalchemy import text
-
-# Ensure root directory is on PYTHONPATH
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../../..")))
-
+from typing import List
+from sqlalchemy import select, delete, text
+import redis.asyncio as aioredis
+from apps.api.config import settings
 from apps.api.core.database import AsyncSessionLocal
-from apps.api.core.security import hash_password
-import apps.api.core.redis as core_async_redis
+from apps.api.modules.organizations.models import Organization
+from apps.api.modules.hackathons.models import Hackathon
+from apps.api.modules.users.models import User, PlatformRole
+from apps.api.core.security import hash_password, encrypt_totp_secret
 
 
-async def clean_database():
-    print("[*] Starting complete dummy data cleanup...")
+CORE_ACCOUNTS = [
+    {
+        "email": "admin@scorva.io",
+        "full_name": "Platform Administrator",
+        "role": PlatformRole.PLATFORM_OWNER,
+        "mfa_enabled": False,
+        "mfa_secret": None,
+    },
+    {
+        "email": "owner@scorva.io",
+        "full_name": "Platform Owner (Enrolled)",
+        "role": PlatformRole.PLATFORM_OWNER,
+        "mfa_enabled": True,
+        "mfa_secret": "JBSWY3DPEHPK3PXP",
+    },
+    {
+        "email": "security@scorva.io",
+        "full_name": "Security Auditor",
+        "role": PlatformRole.SECURITY_ADMIN,
+        "mfa_enabled": True,
+        "mfa_secret": "HXDMVJECJJWSRB3HWIZR4IFUGFTMXBOZ",
+    },
+]
 
-    async with AsyncSessionLocal() as session:
-        # 1. Truncate operational and tenant tables CASCADE
-        operational_tables = [
-            "evaluation_criterion_scores",
-            "judge_criterion_scores",
-            "judge_reviews",
-            "evidence_references",
-            "evaluation_results",
-            "evaluation_jobs",
-            "evaluation_job_outbox",
-            "submission_snapshots",
-            "submissions",
-            "participant_support_replies",
-            "participant_support_tickets",
-            "participant_task_records",
-            "participant_project_registrations",
-            "participant_notification_states",
-            "participant_pat_tokens",
-            "github_events",
-            "hackathon_judges",
-            "team_members",
-            "teams",
-            "rubric_criteria",
-            "rubric_versions",
-            "rubrics",
-            "hackathons",
-            "organization_integrations",
-            "organization_memberships",
-            "organizations",
-            "audit_events",
-            "authz_invalidation_outbox",
-            "configuration_history",
-            "configuration_overrides",
-            "mfa_pending_tokens",
-            "rate_limit_buckets",
-            "totp_replay_prevention",
-            "user_role_assignments",
-            "user_sessions",
+
+async def run_cleanup():
+    async with AsyncSessionLocal() as db:
+        # 1. Identify real organizations and hackathons to preserve
+        real_org_rows = (await db.execute(text("SELECT id FROM organizations WHERE slug = 'd4-community'"))).fetchall()
+        keep_org_ids = [str(r[0]) for r in real_org_rows]
+
+        real_hack_rows = (await db.execute(text("SELECT id FROM hackathons WHERE slug = 'graviton'"))).fetchall()
+        keep_hack_ids = [str(r[0]) for r in real_hack_rows]
+
+        # Explicit user emails to keep
+        keep_emails = [
+            "admin@scorva.io",
+            "owner@scorva.io",
+            "security@scorva.io",
+            "rahul@gmail.com",
+            "mayank@scorva.ai",
+            "organizer@scorva.io",
+            "judge@scorva.io",
         ]
 
-        for tbl in operational_tables:
-            await session.execute(text(f'TRUNCATE TABLE "{tbl}" CASCADE;'))
-            print(f"    - Truncated {tbl}")
+        real_user_rows = (await db.execute(
+            select(User.id).where(User.email.in_(keep_emails))
+        )).scalars().all()
+        keep_user_ids = [str(uid) for uid in real_user_rows]
 
-        # 2. Clean custom test roles
-        await session.execute(text("DELETE FROM role_permissions WHERE role_id IN (SELECT id FROM roles WHERE is_system = false);"))
-        await session.execute(text("DELETE FROM roles WHERE is_system = false;"))
-        print("    - Cleaned non-system test roles")
+        print(f"[i] Keeping {len(keep_org_ids)} org(s), {len(keep_hack_ids)} hackathon(s), {len(keep_user_ids)} user(s).")
 
-        # 3. Clean users except super admin
-        await session.execute(text("DELETE FROM users;"))
-        print("    - Cleared all users")
+        hids_in = ", ".join(f"'{h}'" for h in keep_hack_ids) or "'00000000-0000-0000-0000-000000000000'"
+        oids_in = ", ".join(f"'{o}'" for o in keep_org_ids) or "'00000000-0000-0000-0000-000000000000'"
+        uids_in = ", ".join(f"'{u}'" for u in keep_user_ids) or "'00000000-0000-0000-0000-000000000000'"
 
-        # 4. Insert fresh standard persona accounts
-        default_pw_hash = hash_password("Password123!")
-        insert_users_sql = text("""
-            INSERT INTO users (
-                id, email, full_name, hashed_password, platform_role,
-                is_active, is_verified, mfa_enabled, created_at, updated_at
-            ) VALUES 
-            (gen_random_uuid(), 'admin@scorva.io', 'Platform Administrator', :pw, CAST('PLATFORM_OWNER' AS platform_role_enum), true, true, false, NOW(), NOW()),
-            (gen_random_uuid(), 'organizer@scorva.io', 'Event Organizer', :pw, NULL, true, true, false, NOW(), NOW()),
-            (gen_random_uuid(), 'judge@scorva.io', 'Hackathon Judge', :pw, NULL, true, true, false, NOW(), NOW()),
-            (gen_random_uuid(), 'participant@scorva.io', 'Participant Student', :pw, NULL, true, true, false, NOW(), NOW());
-        """)
-        await session.execute(insert_users_sql, {"pw": default_pw_hash})
-        print("    - Seeded core personas (admin@scorva.io, organizer@scorva.io, judge@scorva.io, participant@scorva.io / Password123!)")
+        # 2. Delete test evaluation jobs, scores, results, references
+        await db.execute(text(f"""
+            UPDATE evaluation_jobs SET current_result_id = NULL 
+            WHERE hackathon_id NOT IN ({hids_in}) OR hackathon_id IS NULL
+        """))
+        await db.execute(text(f"""
+            DELETE FROM evidence_references WHERE criterion_score_id IN (
+                SELECT id FROM evaluation_criterion_scores WHERE evaluation_result_id IN (
+                    SELECT id FROM evaluation_results WHERE hackathon_id NOT IN ({hids_in}) OR hackathon_id IS NULL
+                )
+            )
+        """))
+        await db.execute(text(f"""
+            DELETE FROM evaluation_criterion_scores WHERE evaluation_result_id IN (
+                SELECT id FROM evaluation_results WHERE hackathon_id NOT IN ({hids_in}) OR hackathon_id IS NULL
+            )
+        """))
+        await db.execute(text(f"""
+            DELETE FROM evaluation_results WHERE hackathon_id NOT IN ({hids_in}) OR hackathon_id IS NULL
+        """))
+        await db.execute(text(f"""
+            DELETE FROM evaluation_jobs WHERE hackathon_id NOT IN ({hids_in}) OR hackathon_id IS NULL
+        """))
+        await db.execute(text("DELETE FROM evaluation_job_outbox"))
 
-        await session.commit()
+        # 3. Delete dummy judge reviews and criterion scores
+        await db.execute(text(f"""
+            DELETE FROM judge_criterion_scores WHERE judge_review_id IN (
+                SELECT id FROM judge_reviews WHERE hackathon_id NOT IN ({hids_in}) OR hackathon_id IS NULL
+            )
+        """))
+        await db.execute(text(f"""
+            DELETE FROM judge_reviews WHERE hackathon_id NOT IN ({hids_in}) OR hackathon_id IS NULL
+        """))
 
-    # 5. Clear Redis cache
+        # 4. Delete dummy submissions and snapshots
+        await db.execute(text(f"""
+            DELETE FROM submission_snapshots WHERE submission_id IN (
+                SELECT id FROM submissions WHERE hackathon_id NOT IN ({hids_in}) OR hackathon_id IS NULL
+            )
+        """))
+        await db.execute(text(f"""
+            DELETE FROM submissions WHERE hackathon_id NOT IN ({hids_in}) OR hackathon_id IS NULL
+        """))
+
+        # 5. Delete dummy support tickets and replies
+        await db.execute(text(f"""
+            DELETE FROM participant_support_replies WHERE ticket_id IN (
+                SELECT id FROM participant_support_tickets WHERE user_id NOT IN ({uids_in})
+            )
+        """))
+        await db.execute(text(f"""
+            DELETE FROM participant_support_tickets WHERE user_id NOT IN ({uids_in})
+        """))
+
+        # Delete dummy project registrations
+        await db.execute(text(f"""
+            DELETE FROM participant_project_registrations WHERE user_id NOT IN ({uids_in})
+        """))
+
+        # Delete dummy tokens, notifications, tasks
+        await db.execute(text(f"DELETE FROM participant_pat_tokens WHERE user_id NOT IN ({uids_in})"))
+        await db.execute(text(f"DELETE FROM participant_notification_states WHERE user_id NOT IN ({uids_in})"))
+        await db.execute(text(f"DELETE FROM participant_task_records WHERE user_id NOT IN ({uids_in})"))
+
+        # 6. Delete dummy teams and members
+        await db.execute(text(f"""
+            DELETE FROM team_members WHERE team_id IN (
+                SELECT id FROM teams WHERE organization_id NOT IN ({oids_in}) OR hackathon_id NOT IN ({hids_in})
+            ) OR user_id NOT IN ({uids_in})
+        """))
+        await db.execute(text(f"""
+            DELETE FROM teams WHERE organization_id NOT IN ({oids_in}) OR hackathon_id NOT IN ({hids_in})
+        """))
+
+        # 7. Delete dummy rubrics & criteria
+        await db.execute(text("ALTER TABLE rubric_criteria DISABLE TRIGGER trg_rubric_criteria_immutable"))
+        await db.execute(text("ALTER TABLE rubric_versions DISABLE TRIGGER trg_rubric_versions_protect"))
+        try:
+            await db.execute(text(f"""
+                DELETE FROM rubric_criteria WHERE rubric_version_id IN (
+                    SELECT rv.id FROM rubric_versions rv JOIN rubrics r ON r.id = rv.rubric_id WHERE r.hackathon_id NOT IN ({hids_in})
+                )
+            """))
+            await db.execute(text(f"""
+                DELETE FROM rubric_versions WHERE rubric_id IN (
+                    SELECT id FROM rubrics WHERE hackathon_id NOT IN ({hids_in})
+                )
+            """))
+            await db.execute(text(f"""
+                DELETE FROM rubrics WHERE hackathon_id NOT IN ({hids_in})
+            """))
+        finally:
+            await db.execute(text("ALTER TABLE rubric_criteria ENABLE TRIGGER trg_rubric_criteria_immutable"))
+            await db.execute(text("ALTER TABLE rubric_versions ENABLE TRIGGER trg_rubric_versions_protect"))
+        await db.execute(text(f"DELETE FROM hackathon_judges WHERE hackathon_id NOT IN ({hids_in})"))
+        await db.execute(text(f"DELETE FROM hackathons WHERE id NOT IN ({hids_in})"))
+
+        # 8. Delete dummy organization memberships & integrations & orgs
+        await db.execute(text(f"""
+            DELETE FROM organization_memberships WHERE organization_id NOT IN ({oids_in}) OR user_id NOT IN ({uids_in})
+        """))
+        await db.execute(text(f"DELETE FROM organization_integrations WHERE organization_id NOT IN ({oids_in})"))
+        await db.execute(text(f"DELETE FROM organizations WHERE id NOT IN ({oids_in})"))
+
+        # 9. Delete dummy user sessions, roles, and dummy users
+        await db.execute(text(f"DELETE FROM user_sessions WHERE user_id NOT IN ({uids_in})"))
+        await db.execute(text(f"DELETE FROM user_role_assignments WHERE user_id NOT IN ({uids_in})"))
+        await db.execute(text(f"DELETE FROM users WHERE id NOT IN ({uids_in})"))
+
+        # 10. Clean test audit events & queues
+        await db.execute(text("ALTER TABLE audit_events DISABLE TRIGGER trg_audit_events_immutable"))
+        try:
+            await db.execute(text("""
+                DELETE FROM audit_events 
+                WHERE actor_email NOT IN ('admin@scorva.io', 'owner@scorva.io', 'security@scorva.io', 'rahul@gmail.com', 'mayank@scorva.ai', 'organizer@scorva.io', 'judge@scorva.io')
+                OR actor_email IS NULL
+            """))
+        finally:
+            await db.execute(text("ALTER TABLE audit_events ENABLE TRIGGER trg_audit_events_immutable"))
+        await db.execute(text("DELETE FROM authz_invalidation_outbox"))
+        await db.execute(text("DELETE FROM github_events"))
+
+        # Ensure the 3 standard admin accounts are present and healthy
+        for acc in CORE_ACCOUNTS:
+            stmt = select(User).where(User.email == acc["email"])
+            existing = (await db.execute(stmt)).scalar_one_or_none()
+            hashed = hash_password("Password123!")
+            enc_sec = encrypt_totp_secret(acc["mfa_secret"], settings.ENCRYPTION_MASTER_KEY) if acc["mfa_secret"] else None
+
+            if existing:
+                existing.full_name = acc["full_name"]
+                existing.platform_role = acc["role"]
+                existing.hashed_password = hashed
+                existing.mfa_enabled = acc["mfa_enabled"]
+                existing.encrypted_mfa_secret = enc_sec
+                existing.is_active = True
+                existing.is_verified = True
+            else:
+                new_u = User(
+                    email=acc["email"],
+                    full_name=acc["full_name"],
+                    hashed_password=hashed,
+                    platform_role=acc["role"],
+                    mfa_enabled=acc["mfa_enabled"],
+                    encrypted_mfa_secret=enc_sec,
+                    is_active=True,
+                    is_verified=True,
+                )
+                db.add(new_u)
+
+        await db.commit()
+        print("[+] Database cleaned successfully: all dummy data removed.")
+
+    # 11. Flush Redis
     try:
-        redis = core_async_redis.get_redis_client()
-        await redis.flushdb()
-        print("[+] Redis cache and sessions flushed successfully.")
+        r = aioredis.from_url(settings.REDIS_URL)
+        await r.flushdb()
+        await r.close()
+        print("[+] Redis cache flushed.")
     except Exception as e:
         print(f"[!] Redis flush warning: {e}")
 
-    print("[SUCCESS] Database cleaned! Zero dummy records remain.")
-
 
 if __name__ == "__main__":
-    asyncio.run(clean_database())
+    asyncio.run(run_cleanup())

@@ -49,6 +49,7 @@ from apps.api.modules.evaluations.schemas import (
     JudgeReviewDetail,
     JudgeSubmissionReviewResponse,
     OrganizerReviewProgressResponse,
+    RevertJudgeReviewRequest,
     SaveJudgeReviewRequest,
     SubmissionCoverageItem,
     SubmissionEvaluationTransparencyResponse,
@@ -829,6 +830,39 @@ async def submit_submission_review(
     resolved_org_id = _resolve_org_id(request, org_id)
     ip, ua, corr_id = _extract_telemetry(request)
     return await judge_service.submit_judge_review(
+        db=db,
+        org_id=resolved_org_id,
+        hackathon_id=hackathon_id,
+        submission_id=submission_id,
+        data=payload,
+        current_user=current_user,
+        ip_address=ip,
+        user_agent=ua,
+        correlation_id=corr_id,
+    )
+
+
+@router.post(
+    "/submissions/{submission_id}/review/revert",
+    response_model=JudgeSubmissionReviewResponse,
+)
+async def revert_submission_review(
+    hackathon_id: uuid.UUID,
+    submission_id: uuid.UUID,
+    payload: RevertJudgeReviewRequest,
+    request: Request,
+    org_id: Optional[uuid.UUID] = None,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db_session),
+):
+    """
+    Subsystem C Sub-Milestone 6.5:
+    Reverts a submitted judge review back to draft (in-progress re-evaluation)
+    or resets it completely back to awaiting review.
+    """
+    resolved_org_id = _resolve_org_id(request, org_id)
+    ip, ua, corr_id = _extract_telemetry(request)
+    return await judge_service.revert_judge_review(
         db=db,
         org_id=resolved_org_id,
         hackathon_id=hackathon_id,

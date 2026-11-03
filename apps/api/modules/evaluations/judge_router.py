@@ -1,6 +1,6 @@
 from typing import List, Optional
 import uuid
-from fastapi import APIRouter, Depends, Request, status
+from fastapi import APIRouter, Depends, Query, Request, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -8,12 +8,18 @@ from apps.api.core.database import get_db_session
 from apps.api.core.exceptions import AppException
 from apps.api.dependencies import get_current_user
 from apps.api.modules.evaluations.models import HackathonJudge, JudgeReview, Submission
+from apps.api.modules.evaluations.ollama_inspector import (
+    get_cached_inspection,
+    inspect_submission_repository,
+)
 from apps.api.modules.evaluations.schemas import (
     JudgeAssignmentItem,
     JudgeHackathonDetailResponse,
     JudgeQueueItem,
     JudgeReviewDetail,
     JudgeSubmissionReviewResponse,
+    OllamaRepoInspectionResponse,
+    RevertJudgeReviewRequest,
     SaveJudgeReviewRequest,
     SubmissionEvaluationTransparencyResponse,
     SubmitJudgeReviewRequest,
@@ -275,6 +281,37 @@ async def submit_judge_submission_review(
     )
 
 
+@router.post(
+    "/hackathons/{hackathon_id}/submissions/{submission_id}/review/revert",
+    response_model=JudgeSubmissionReviewResponse,
+)
+async def revert_judge_submission_review(
+    hackathon_id: uuid.UUID,
+    submission_id: uuid.UUID,
+    payload: RevertJudgeReviewRequest,
+    request: Request,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db_session),
+) -> JudgeSubmissionReviewResponse:
+    """
+    Reverts a submitted judge review back to draft (in-progress re-evaluation)
+    or resets it completely back to awaiting review.
+    """
+    hackathon, org = await _verify_judge_access(db, hackathon_id, user)
+    ip, ua, corr_id = _extract_telemetry(request)
+    return await judge_service.revert_judge_review(
+        db=db,
+        org_id=org.id,
+        hackathon_id=hackathon_id,
+        submission_id=submission_id,
+        data=payload,
+        current_user=user,
+        ip_address=ip,
+        user_agent=ua,
+        correlation_id=corr_id,
+    )
+
+
 @router.get(
     "/hackathons/{hackathon_id}/submissions/{submission_id}/transparency",
     response_model=SubmissionEvaluationTransparencyResponse,
@@ -296,3 +333,49 @@ async def get_judge_submission_ai_transparency(
         hackathon_id=hackathon_id,
         submission_id=submission_id,
     )
+
+
+@router.post(
+    "/hackathons/{hackathon_id}/submissions/{submission_id}/inspect-repo",
+    response_model=OllamaRepoInspectionResponse,
+    summary="One-click deep repository inspection with Ollama",
+)
+async def inspect_submission_repo(
+    hackathon_id: uuid.UUID,
+    submission_id: uuid.UUID,
+    force_refresh: bool = Query(False, description="Whether to bypass cache and re-run Ollama analysis"),
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db_session),
+) -> OllamaRepoInspectionResponse:
+    """
+    Executes an autonomous, one-click deep repository inspection powered by Ollama.
+    Analyzes project purpose, key innovation, complete tech stack, complexity,
+    judge evaluation factors, and tailored questions.
+    """
+    hackathon, org = await _verify_judge_access(db, hackathon_id, user)
+    return await inspect_submission_repository(
+        db=db,
+        hackathon_id=hackathon_id,
+        submission_id=submission_id,
+        current_user=user,
+        force_refresh=force_refresh,
+    )
+
+
+@router.get(
+    "/hackathons/{hackathon_id}/submissions/{submission_id}/inspect-repo",
+    response_model=Optional[OllamaRepoInspectionResponse],
+    summary="Get cached Ollama repository inspection",
+)
+async def get_submission_repo_inspection(
+    hackathon_id: uuid.UUID,
+    submission_id: uuid.UUID,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db_session),
+) -> Optional[OllamaRepoInspectionResponse]:
+    """
+    Returns the cached Ollama repository inspection for a submission if already performed.
+    """
+    hackathon, org = await _verify_judge_access(db, hackathon_id, user)
+    return await get_cached_inspection(db=db, submission_id=submission_id)
+

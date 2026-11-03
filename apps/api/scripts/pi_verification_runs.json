@@ -1,0 +1,28 @@
+{
+  "timestamp": "2026-11-02T16:16:43Z",
+  "target_model": "google/gemini-3.5-flash-lite",
+  "runs_requested": 3,
+  "runs_successful": 0,
+  "score_spread": "0.00",
+  "scores_normalized": [],
+  "runs": [
+    {
+      "run_index": 1,
+      "status": "ERROR",
+      "error": "[AI_CONNECTION_ERROR] [PI_NOT_FOUND] Pi CLI executable was not found. Please verify that Pi is installed globally or set PI_EXECUTABLE_PATH.",
+      "duration_seconds": 1.0029735565185547
+    },
+    {
+      "run_index": 2,
+      "status": "ERROR",
+      "error": "[AI_CONNECTION_ERROR] [PI_NOT_FOUND] Pi CLI executable was not found. Please verify that Pi is installed globally or set PI_EXECUTABLE_PATH.",
+      "duration_seconds": 1.0037941932678223
+    },
+    {
+      "run_index": 3,
+      "status": "ERROR",
+      "error": "[AI_CONNECTION_ERROR] [PI_NOT_FOUND] Pi CLI executable was not found. Please verify that Pi is installed globally or set PI_EXECUTABLE_PATH.",
+      "duration_seconds": 1.0036919116973877
+    }
+  ]
+}

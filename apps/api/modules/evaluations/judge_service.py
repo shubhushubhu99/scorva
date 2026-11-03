@@ -33,6 +33,7 @@ from apps.api.modules.evaluations.schemas import (
     JudgeReviewDetail,
     JudgeSubmissionReviewResponse,
     OrganizerReviewProgressResponse,
+    RevertJudgeReviewRequest,
     SaveJudgeReviewRequest,
     SubmissionCoverageItem,
     SubmissionReviewsResponse,
@@ -391,7 +392,7 @@ async def get_submission_judge_review(
     is_org_staff = mem and mem.role in (OrgRole.ORG_OWNER, OrgRole.ORG_ADMIN, OrgRole.ORGANIZER)
 
     if is_self:
-        if not is_assigned:
+        if not is_assigned and not current_user.platform_role:
             raise AppException(
                 status_code=403,
                 code="FORBIDDEN_NOT_ASSIGNED_JUDGE",
@@ -473,6 +474,8 @@ async def get_submission_judge_review(
                 ai_scores_map[cs.criterion_id] = {
                     "score": cs.awarded_score,
                     "rationale": cs.rationale,
+                    "quick_explanation": cs.quick_explanation,
+                    "detailed_explanation": cs.detailed_explanation,
                 }
     except Exception:
         ai_eval_detail = None
@@ -511,6 +514,8 @@ async def get_submission_judge_review(
                     judge_notes=cs.judge_notes if cs else None,
                     ai_suggested_score=ai_data.get("score"),
                     ai_rationale=ai_data.get("rationale"),
+                    ai_quick_explanation=ai_data.get("quick_explanation"),
+                    ai_detailed_explanation=ai_data.get("detailed_explanation"),
                 )
             )
 
@@ -1070,6 +1075,183 @@ async def submit_judge_review(
         updated_at=review.updated_at,
         submitted_at=review.submitted_at,
         criterion_scores=criterion_details,
+    )
+
+
+async def revert_judge_review(
+    db: AsyncSession,
+    org_id: uuid.UUID,
+    hackathon_id: uuid.UUID,
+    submission_id: uuid.UUID,
+    data: RevertJudgeReviewRequest,
+    current_user: User,
+    ip_address: str,
+    user_agent: str,
+    correlation_id: Optional[str] = None,
+) -> JudgeSubmissionReviewResponse:
+    """
+    Reverts a submitted final judge review back to draft (in-progress re-evaluation)
+    or resets it completely back to awaiting review.
+    Enforces authorization, optimistic updates, and immutable audit logging.
+    """
+    # 1. Verify submission exists
+    sub_stmt = select(Submission).where(
+        Submission.id == submission_id,
+        Submission.hackathon_id == hackathon_id,
+        Submission.organization_id == org_id,
+        Submission.deleted_at.is_(None),
+    )
+    submission = (await db.execute(sub_stmt)).scalar_one_or_none()
+    if not submission:
+        raise AppException(
+            status_code=404,
+            code="SUBMISSION_NOT_FOUND",
+            message="Submission not found.",
+        )
+
+    # 2. Check authorization
+    judge_user_id = data.target_judge_user_id or current_user.id
+    is_self = judge_user_id == current_user.id
+
+    is_assigned = (
+        await db.execute(
+            select(HackathonJudge).where(
+                HackathonJudge.hackathon_id == hackathon_id,
+                HackathonJudge.user_id == current_user.id,
+            )
+        )
+    ).scalar_one_or_none()
+
+    mem = (
+        await db.execute(
+            select(OrganizationMembership).where(
+                OrganizationMembership.organization_id == org_id,
+                OrganizationMembership.user_id == current_user.id,
+            )
+        )
+    ).scalar_one_or_none()
+    is_org_staff = mem and mem.role in (OrgRole.ORG_OWNER, OrgRole.ORG_ADMIN, OrgRole.ORGANIZER)
+
+    if not is_self and not is_org_staff and not current_user.platform_role:
+        raise AppException(
+            status_code=403,
+            code="FORBIDDEN_CANNOT_REVERT_OTHER_JUDGE",
+            message="You do not have permission to revert another judge's review.",
+        )
+
+    if is_self and not is_assigned and not is_org_staff and not current_user.platform_role:
+        raise AppException(
+            status_code=403,
+            code="FORBIDDEN_NOT_ASSIGNED_JUDGE",
+            message="You are not assigned as a judge for this hackathon.",
+        )
+
+    # 3. Load existing review
+    review_stmt = (
+        select(JudgeReview)
+        .options(selectinload(JudgeReview.criterion_scores))
+        .where(
+            JudgeReview.submission_id == submission_id,
+            JudgeReview.judge_user_id == judge_user_id,
+        )
+    )
+    review = (await db.execute(review_stmt)).scalar_one_or_none()
+    if not review:
+        raise AppException(
+            status_code=404,
+            code="REVIEW_NOT_FOUND",
+            message="No review found for this submission.",
+        )
+
+    if review.status != "submitted":
+        raise AppException(
+            status_code=400,
+            code="REVIEW_NOT_SUBMITTED",
+            message="Only submitted reviews can be reverted.",
+        )
+
+    previous_score = review.score
+
+    if data.target_status == "draft":
+        # Revert to draft (in-progress re-evaluation, preserving entered scores)
+        review.status = "draft"
+        review.submitted_at = None
+        review.version += 1
+
+        await record_audit_event(
+            db=db,
+            action="judge_review_reverted_to_draft",
+            resource_type="judge_review",
+            resource_id=str(review.id),
+            outcome=AuditOutcome.SUCCESS,
+            actor_user_id=current_user.id,
+            actor_email=current_user.email,
+            actor_role="judge" if is_self else "organizer",
+            organization_id=org_id,
+            reason=data.reason or f"Reverted submitted review for submission '{submission.title}' to draft for re-evaluation",
+            diff_payload={
+                "submission_id": str(submission_id),
+                "judge_user_id": str(judge_user_id),
+                "previous_status": "submitted",
+                "new_status": "draft",
+                "previous_score": str(previous_score) if previous_score is not None else None,
+                "version": review.version,
+                "reason": data.reason,
+            },
+            ip_address=ip_address,
+            user_agent=user_agent,
+            correlation_id=correlation_id,
+        )
+        await db.flush()
+
+    elif data.target_status == "awaiting":
+        # Reset review completely back to awaiting
+        review_id_str = str(review.id)
+        await db.execute(
+            delete(JudgeCriterionScore).where(JudgeCriterionScore.judge_review_id == review.id)
+        )
+        await db.delete(review)
+
+        await record_audit_event(
+            db=db,
+            action="judge_review_reset_to_awaiting",
+            resource_type="judge_review",
+            resource_id=review_id_str,
+            outcome=AuditOutcome.SUCCESS,
+            actor_user_id=current_user.id,
+            actor_email=current_user.email,
+            actor_role="judge" if is_self else "organizer",
+            organization_id=org_id,
+            reason=data.reason or f"Reset review for submission '{submission.title}' back to awaiting review",
+            diff_payload={
+                "submission_id": str(submission_id),
+                "judge_user_id": str(judge_user_id),
+                "previous_status": "submitted",
+                "new_status": "awaiting",
+                "previous_score": str(previous_score) if previous_score is not None else None,
+                "reason": data.reason,
+            },
+            ip_address=ip_address,
+            user_agent=user_agent,
+            correlation_id=correlation_id,
+        )
+        await db.flush()
+
+    else:
+        raise AppException(
+            status_code=400,
+            code="INVALID_TARGET_STATUS",
+            message=f"Invalid target status '{data.target_status}'. Must be 'draft' or 'awaiting'.",
+        )
+
+    # Return refreshed review workspace response
+    return await get_submission_judge_review(
+        db=db,
+        org_id=org_id,
+        hackathon_id=hackathon_id,
+        submission_id=submission_id,
+        current_user=current_user,
+        target_judge_user_id=judge_user_id,
     )
 
 

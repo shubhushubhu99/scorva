@@ -2,6 +2,7 @@ import asyncio
 from datetime import datetime, timezone
 import time
 from typing import Optional
+import httpx
 
 from fastapi import APIRouter, Request, Response, status
 from fastapi.responses import JSONResponse
@@ -50,6 +51,44 @@ async def get_health(response: Response) -> HealthResponse:
     db_status: HealthStatus = "healthy" if db_healthy else "unhealthy"
     redis_status: HealthStatus = "healthy" if redis_healthy else "unhealthy"
 
+    # Multi-Ollama health probe (Primary Remote 1, Secondary Remote 2, Fallback Local)
+    ollama_status: HealthStatus = "healthy"
+    ollama_latency: Optional[float] = None
+    ollama_detail = "Ollama Cluster active"
+    try:
+        t0 = time.perf_counter()
+        async with httpx.AsyncClient(timeout=2.0) as client:
+            primary_url = getattr(settings, "OLLAMA_PRIMARY_URL", "http://10.3.2.157:11434")
+            sec_remote_url = getattr(settings, "OLLAMA_SECONDARY_REMOTE_URL", "http://10.3.2.158:11434")
+            fallback_url = getattr(settings, "OLLAMA_FALLBACK_URL", "http://localhost:11434")
+
+            try:
+                p_resp = await client.get(f"{primary_url}/api/version")
+                if p_resp.status_code == 200:
+                    ollama_latency = round((time.perf_counter() - t0) * 1000, 2)
+                    ollama_detail = f"Primary Remote Ollama active at {primary_url} (v{p_resp.json().get('version', '')})"
+                else:
+                    raise Exception(f"Primary returned {p_resp.status_code}")
+            except Exception:
+                try:
+                    s_resp = await client.get(f"{sec_remote_url}/api/version")
+                    if s_resp.status_code == 200:
+                        ollama_latency = round((time.perf_counter() - t0) * 1000, 2)
+                        ollama_detail = f"Secondary Remote Ollama active at {sec_remote_url} (v{s_resp.json().get('version', '')})"
+                    else:
+                        raise Exception(f"Secondary Remote returned {s_resp.status_code}")
+                except Exception:
+                    f_resp = await client.get(f"{fallback_url}/api/version")
+                    ollama_latency = round((time.perf_counter() - t0) * 1000, 2)
+                    if f_resp.status_code == 200:
+                        ollama_detail = f"Fallback Local Ollama active at {fallback_url} (Remote PCs unreachable)"
+                    else:
+                        ollama_status = "degraded"
+                        ollama_detail = "All Primary Remote, Secondary Remote, and Local Ollama non-responsive"
+    except Exception as exc:
+        ollama_status = "degraded"
+        ollama_detail = f"Ollama probe error: {exc}"
+
     services = {
         "api": ServiceCheck(
             status="healthy",
@@ -72,8 +111,9 @@ async def get_health(response: Response) -> HealthResponse:
             details="Celery broker available via Redis" if redis_healthy else redis_detail,
         ),
         "ollama": ServiceCheck(
-            status="unknown",
-            details="Ollama client inference pipeline active in Phase 4",
+            status=ollama_status,
+            latency_ms=ollama_latency,
+            details=ollama_detail,
         ),
     }
 

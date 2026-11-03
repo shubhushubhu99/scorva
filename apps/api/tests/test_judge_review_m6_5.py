@@ -21,7 +21,7 @@ from apps.api.modules.evaluations.models import (
     Team,
 )
 from apps.api.modules.hackathons.models import Hackathon, HackathonStatus
-from apps.api.modules.organizations.models import OrganizationMembership, OrgRole
+from apps.api.modules.organizations.models import MembershipStatus, OrganizationMembership, OrgRole
 from apps.api.tests.test_hackathons import ORIGIN_HEADER, hackathon_test_setup
 
 
@@ -1039,3 +1039,245 @@ async def test_judge_workspace_assignments_listing(
     assert my_assignment["total_submissions"] == 2
     assert my_assignment["my_submitted_count"] == 0
     assert my_assignment["my_pending_count"] == 2
+
+
+# =====================================================================
+# Test 21: Revert Submitted Judge Review to Draft (Re-evaluation)
+# =====================================================================
+
+@pytest.mark.asyncio
+async def test_revert_judge_review_to_draft(
+    client: AsyncClient, db_session, setup_judge_review_env
+):
+    """
+    Test 21:
+    Judge submits a final review, then reverts it back to draft for re-evaluation.
+    Verifies that status becomes 'draft', can_edit becomes True, scores are preserved,
+    audit event is logged, and judge can update scores and re-submit.
+    """
+    env = setup_judge_review_env
+    hackathon_id = env["hackathon"].id
+    sub1_id = env["sub1"].id
+    crit1_id = env["crit1"].id
+    crit2_id = env["crit2"].id
+    dave_headers = {"Authorization": f"Bearer {env['dave_token']}", **ORIGIN_HEADER}
+
+    # 1. Dave submits final review
+    submit_payload = {
+        "overall_feedback": "Initial final evaluation for project 1.",
+        "decision": "accepted",
+        "criterion_scores": [
+            {"criterion_id": str(crit1_id), "score": 8.0, "judge_notes": "Strong architecture"},
+            {"criterion_id": str(crit2_id), "score": 9.0, "judge_notes": "High innovation"},
+        ],
+    }
+    submit_resp = await client.post(
+        f"/api/v1/judge/hackathons/{hackathon_id}/submissions/{sub1_id}/review/submit",
+        json=submit_payload,
+        headers=dave_headers,
+    )
+    assert submit_resp.status_code == 200
+    assert submit_resp.json()["status"] == "submitted"
+
+    # Verify workspace review is locked
+    review_resp = await client.get(
+        f"/api/v1/judge/hackathons/{hackathon_id}/submissions/{sub1_id}/review",
+        headers=dave_headers,
+    )
+    assert review_resp.status_code == 200
+    assert review_resp.json()["can_edit"] is False
+    assert review_resp.json()["review"]["status"] == "submitted"
+
+    # 2. Dave reverts review to draft
+    revert_payload = {
+        "target_status": "draft",
+        "reason": "Re-evaluating based on additional project demo and evidence.",
+    }
+    revert_resp = await client.post(
+        f"/api/v1/judge/hackathons/{hackathon_id}/submissions/{sub1_id}/review/revert",
+        json=revert_payload,
+        headers=dave_headers,
+    )
+    assert revert_resp.status_code == 200, revert_resp.text
+    reverted_data = revert_resp.json()
+    assert reverted_data["can_edit"] is True
+    assert reverted_data["review"] is not None
+    assert reverted_data["review"]["status"] == "draft"
+    assert reverted_data["review"]["submitted_at"] is None
+    # Scores preserved
+    scores_by_crit = {cs["criterion_id"]: cs["score"] for cs in reverted_data["review"]["criterion_scores"]}
+    assert scores_by_crit[str(crit1_id)] == "8.00"
+    assert scores_by_crit[str(crit2_id)] == "9.00"
+
+    # 3. Verify audit log entry
+    audit_stmt = (
+        select(AuditEvent)
+        .where(
+            AuditEvent.action == "judge_review_reverted_to_draft",
+            AuditEvent.actor_user_id == env["dave"].id,
+        )
+        .order_by(AuditEvent.timestamp.desc())
+    )
+    audit = (await db_session.execute(audit_stmt)).scalar_one_or_none()
+    assert audit is not None
+    assert "Re-evaluating" in audit.reason
+
+    # 4. Dave updates scores and re-submits
+    resubmit_payload = {
+        "overall_feedback": "Revised evaluation after demo: superior test coverage.",
+        "decision": "accepted",
+        "criterion_scores": [
+            {"criterion_id": str(crit1_id), "score": 9.5, "judge_notes": "Upgraded after live demo"},
+            {"criterion_id": str(crit2_id), "score": 9.0, "judge_notes": "High innovation"},
+        ],
+    }
+    resubmit_resp = await client.post(
+        f"/api/v1/judge/hackathons/{hackathon_id}/submissions/{sub1_id}/review/submit",
+        json=resubmit_payload,
+        headers=dave_headers,
+    )
+    assert resubmit_resp.status_code == 200
+    assert resubmit_resp.json()["status"] == "submitted"
+    assert resubmit_resp.json()["score"] == "9.20"
+
+
+# =====================================================================
+# Test 22: Revert Submitted Judge Review to Awaiting (Complete Reset)
+# =====================================================================
+
+@pytest.mark.asyncio
+async def test_revert_judge_review_to_awaiting(
+    client: AsyncClient, db_session, setup_judge_review_env
+):
+    """
+    Test 22:
+    Judge submits a final review on sub2, then resets it back to awaiting review.
+    Verifies that the review record is deleted, review is None, can_edit is True,
+    and queue lists submission as 'not_started'.
+    """
+    env = setup_judge_review_env
+    hackathon_id = env["hackathon"].id
+    sub2_id = env["sub2"].id
+    crit1_id = env["crit1"].id
+    crit2_id = env["crit2"].id
+    dave_headers = {"Authorization": f"Bearer {env['dave_token']}", **ORIGIN_HEADER}
+
+    # 1. Dave submits final review on sub2
+    submit_payload = {
+        "overall_feedback": "Initial submission review for project 2.",
+        "decision": "accepted",
+        "criterion_scores": [
+            {"criterion_id": str(crit1_id), "score": 7.0, "judge_notes": "Decent baseline"},
+            {"criterion_id": str(crit2_id), "score": 7.5, "judge_notes": "Interesting concept"},
+        ],
+    }
+    submit_resp = await client.post(
+        f"/api/v1/judge/hackathons/{hackathon_id}/submissions/{sub2_id}/review/submit",
+        json=submit_payload,
+        headers=dave_headers,
+    )
+    assert submit_resp.status_code == 200
+
+    # 2. Dave resets review to awaiting
+    reset_payload = {
+        "target_status": "awaiting",
+        "reason": "Submitted under wrong rubric context; resetting to start completely fresh.",
+    }
+    reset_resp = await client.post(
+        f"/api/v1/judge/hackathons/{hackathon_id}/submissions/{sub2_id}/review/revert",
+        json=reset_payload,
+        headers=dave_headers,
+    )
+    assert reset_resp.status_code == 200, reset_resp.text
+    reset_data = reset_resp.json()
+    assert reset_data["can_edit"] is True
+    assert reset_data["review"] is None
+
+    # 3. Check queue endpoint reflects 'not_started'
+    queue_resp = await client.get(
+        f"/api/v1/judge/hackathons/{hackathon_id}/submissions",
+        headers=dave_headers,
+    )
+    assert queue_resp.status_code == 200
+    queue_items = queue_resp.json()
+    sub2_item = next(it for it in queue_items if it["submission_id"] == str(sub2_id))
+    assert sub2_item["review_status"] == "not_started"
+    assert sub2_item["review_score"] is None
+
+    # 4. Audit event exists
+    audit_stmt = (
+        select(AuditEvent)
+        .where(
+            AuditEvent.action == "judge_review_reset_to_awaiting",
+            AuditEvent.actor_user_id == env["dave"].id,
+        )
+        .order_by(AuditEvent.timestamp.desc())
+    )
+    audit = (await db_session.execute(audit_stmt)).scalar_one_or_none()
+    assert audit is not None
+    assert "resetting to start completely fresh" in audit.reason
+
+
+# =====================================================================
+# Test 23: Revert Validation & Authorization Protections
+# =====================================================================
+
+@pytest.mark.asyncio
+async def test_revert_judge_review_validation_and_permissions(
+    client: AsyncClient, db_session, setup_judge_review_env, create_user_helper, create_session_helper
+):
+    """
+    Test 23:
+    - Attempting to revert a review that is currently in draft raises 400 REVIEW_NOT_SUBMITTED.
+    - A judge without organization management role attempting to revert another judge's review raises 403.
+    """
+    env = setup_judge_review_env
+    hackathon_id = env["hackathon"].id
+    sub1_id = env["sub1"].id
+    crit1_id = env["crit1"].id
+    dave_headers = {"Authorization": f"Bearer {env['dave_token']}", **ORIGIN_HEADER}
+
+    # Dave saves a draft
+    draft_payload = {
+        "overall_feedback": "Work in progress draft.",
+        "criterion_scores": [{"criterion_id": str(crit1_id), "score": 6.0}],
+    }
+    draft_resp = await client.post(
+        f"/api/v1/judge/hackathons/{hackathon_id}/submissions/{sub1_id}/review",
+        json=draft_payload,
+        headers=dave_headers,
+    )
+    assert draft_resp.status_code == 200
+
+    # Dave tries to revert the draft -> 400
+    revert_draft_resp = await client.post(
+        f"/api/v1/judge/hackathons/{hackathon_id}/submissions/{sub1_id}/review/revert",
+        json={"target_status": "draft"},
+        headers=dave_headers,
+    )
+    assert revert_draft_resp.status_code == 400
+    assert revert_draft_resp.json()["code"] == "REVIEW_NOT_SUBMITTED"
+
+    # Create Judy who is an external assigned judge (no organization staff role)
+    judy = await create_user_helper(email=f"judy_{uuid.uuid4().hex[:6]}@alpha.io", platform_role=None)
+    judy_token = await create_session_helper(judy)
+    db_session.add(
+        HackathonJudge(
+            id=uuid.uuid4(),
+            hackathon_id=hackathon_id,
+            user_id=judy.id,
+            assigned_by_user_id=env["alice"].id,
+        )
+    )
+    await db_session.commit()
+    judy_headers = {"Authorization": f"Bearer {judy_token}", **ORIGIN_HEADER}
+
+    # Judy (standard judge/member) tries to revert Dave's review -> 403
+    spy_resp = await client.post(
+        f"/api/v1/judge/hackathons/{hackathon_id}/submissions/{sub1_id}/review/revert",
+        json={"target_status": "draft", "target_judge_user_id": str(env["dave"].id)},
+        headers=judy_headers,
+    )
+    assert spy_resp.status_code == 403
+    assert spy_resp.json()["code"] == "FORBIDDEN_CANNOT_REVERT_OTHER_JUDGE"
+

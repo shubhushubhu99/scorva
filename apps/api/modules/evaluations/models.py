@@ -693,6 +693,7 @@ class EvaluationResult(Base):
     model_provider: Mapped[str] = mapped_column(String(50), nullable=False)
     model_name: Mapped[str] = mapped_column(String(100), nullable=False)
     prompt_version: Mapped[str] = mapped_column(String(50), nullable=False)
+    policy_version: Mapped[Optional[str]] = mapped_column(String(32), nullable=True, default="1.0.0")
     raw_score: Mapped[Decimal] = mapped_column(Numeric(6, 2), nullable=False)
     normalized_score: Mapped[Decimal] = mapped_column(
         Numeric(5, 2), nullable=False
@@ -721,6 +722,21 @@ class EvaluationResult(Base):
     )
     judge_reviews: Mapped[List["JudgeReview"]] = relationship(
         "JudgeReview", back_populates="evaluation_result"
+    )
+    assessments: Mapped[List["EvaluationCriterionAssessment"]] = relationship(
+        "EvaluationCriterionAssessment",
+        back_populates="evaluation_result",
+        cascade="all, delete-orphan",
+    )
+    evidence_records: Mapped[List["EvaluationEvidenceRecord"]] = relationship(
+        "EvaluationEvidenceRecord",
+        back_populates="evaluation_result",
+        cascade="all, delete-orphan",
+    )
+    deductions: Mapped[List["EvaluationDeductionAttribution"]] = relationship(
+        "EvaluationDeductionAttribution",
+        back_populates="evaluation_result",
+        cascade="all, delete-orphan",
     )
 
 
@@ -1050,6 +1066,9 @@ class HackathonJudge(Base):
         ForeignKey("users.id", ondelete="SET NULL"),
         nullable=True,
     )
+    access_code: Mapped[Optional[str]] = mapped_column(
+        String(32), nullable=True, index=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
@@ -1149,3 +1168,372 @@ class GitHubEvent(Base):
         Index("ix_github_events_org_hack_sub", "organization_id", "hackathon_id", "submission_id"),
         Index("ix_github_events_repo_timestamp", "canonical_repo_id", "event_timestamp"),
     )
+
+
+class SubmissionRepoInspection(Base):
+    """Subsystem E: Persisted neural repo inspection and judge synthesis results."""
+    __tablename__ = "submission_repo_inspections"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    submission_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("submissions.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    hackathon_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("hackathons.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    inspected_by_user_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    model_name: Mapped[str] = mapped_column(String(100), nullable=False)
+    status: Mapped[str] = mapped_column(String(50), nullable=False, default="completed")
+    project_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    quick_summary: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    what_is_building: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    innovation_data: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSONB, nullable=True)
+    tech_stack_data: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSONB, nullable=True)
+    complexity_data: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSONB, nullable=True)
+    judge_factors_data: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSONB, nullable=True)
+    key_highlights: Mapped[Optional[List[str]]] = mapped_column(JSONB, nullable=True)
+    potential_red_flags: Mapped[Optional[List[str]]] = mapped_column(JSONB, nullable=True)
+    suggested_judge_questions: Mapped[Optional[List[str]]] = mapped_column(JSONB, nullable=True)
+    raw_json: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSONB, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+
+class AIModelRegistryItem(Base):
+    """Subsystem E: Persisted AI Model catalog across Pi, Ollama, and external providers."""
+    __tablename__ = "ai_model_registry"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    provider: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    model_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    display_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    context_window: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    max_tokens: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    input_cost: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 6), nullable=True)
+    output_cost: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 6), nullable=True)
+    capabilities: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSONB, nullable=True)
+    is_available: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    is_enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    is_default: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    last_tested_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_test_status: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    last_test_latency_ms: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    last_test_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+    __table_args__ = (
+        UniqueConstraint("provider", "model_id", name="uq_ai_model_provider_id"),
+    )
+
+
+class AITaskModelAssignment(Base):
+    """Subsystem E: Task-based AI Model routing policy and fallback configuration."""
+    __tablename__ = "ai_task_model_assignments"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    task_type: Mapped[str] = mapped_column(String(64), unique=True, nullable=False, index=True)
+    name: Mapped[str] = mapped_column(String(128), nullable=False)
+    description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    is_enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    primary_provider: Mapped[str] = mapped_column(String(64), nullable=False)
+    primary_model: Mapped[str] = mapped_column(String(128), nullable=False)
+    secondary_provider: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    secondary_model: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    fallback_models: Mapped[Optional[List[Dict[str, Any]]]] = mapped_column(JSONB, nullable=True)
+    timeout_seconds: Mapped[int] = mapped_column(Integer, default=180, nullable=False)
+    max_retries: Mapped[int] = mapped_column(Integer, default=2, nullable=False)
+    parallel_enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    priority: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+
+class AIExecutionRecord(Base):
+    """Subsystem E: Audit log of all model executions, token usage, latencies, and fallbacks."""
+    __tablename__ = "ai_execution_records"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    evaluation_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("evaluation_jobs.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    submission_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("submissions.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    task_type: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    primary_provider: Mapped[str] = mapped_column(String(64), nullable=False)
+    primary_model: Mapped[str] = mapped_column(String(128), nullable=False)
+    actual_provider: Mapped[str] = mapped_column(String(64), nullable=False)
+    actual_model: Mapped[str] = mapped_column(String(128), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    fallback_used: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    fallback_reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    attempt_count: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    duration_ms: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    prompt_tokens: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    completion_tokens: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    total_tokens: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    estimated_cost: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 6), nullable=True)
+    prompt_preview: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    output_payload: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSONB, nullable=True)
+    validation_passed: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    validation_errors: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSONB, nullable=True)
+    error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), index=True
+    )
+
+
+class AIModelTestRecord(Base):
+    """Subsystem E: History of ad-hoc administrative model test runs."""
+    __tablename__ = "ai_model_test_records"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    provider: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    model_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    prompt: Mapped[str] = mapped_column(Text, nullable=False)
+    is_structured: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    response_text: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    structured_output: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSONB, nullable=True)
+    validation_passed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    duration_ms: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    tokens_used: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    tested_by_user_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), index=True
+    )
+
+
+# ==============================================================================
+# Phase 1: Fair Evaluation Foundation & Scoring Contracts Models
+# ==============================================================================
+
+class EvaluationPolicyVersion(Base):
+    """
+    Subsystem F: Versioned Fair Evaluation Policy definition.
+    Ensures historical evaluations can be traced to the policy in effect at the time.
+    """
+    __tablename__ = "evaluation_policy_versions"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    version: Mapped[str] = mapped_column(String(32), unique=True, nullable=False, index=True)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False)
+    policy_rules: Mapped[List[Dict[str, Any]]] = mapped_column(JSONB, nullable=False, default=list)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class EvaluationEvidenceRecord(Base):
+    """
+    Subsystem F: Verifiable, line-level evidence grounding for awarded scores and findings.
+    Traces finding to commit SHA, file path, line range, and verification status.
+    """
+    __tablename__ = "evaluation_evidence_records"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    evaluation_result_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("evaluation_results.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
+    submission_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("submissions.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    commit_sha: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    evidence_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    file_path: Mapped[str] = mapped_column(String(500), nullable=False)
+    start_line: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    end_line: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    source_excerpt: Mapped[str] = mapped_column(Text, nullable=False)
+    commit_ref: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    criterion_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("rubric_criteria.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    requirement_id: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    verification_status: Mapped[str] = mapped_column(String(32), nullable=False, default="VERIFIED", index=True)
+    confidence: Mapped[Decimal] = mapped_column(Numeric(5, 2), nullable=False, default=Decimal("1.00"))
+    explanation: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    evaluation_result: Mapped[Optional["EvaluationResult"]] = relationship(
+        "EvaluationResult", back_populates="evidence_records"
+    )
+    submission: Mapped["Submission"] = relationship("Submission")
+    criterion: Mapped[Optional["RubricCriterion"]] = relationship("RubricCriterion")
+
+
+class EvaluationDeductionAttribution(Base):
+    """
+    Subsystem F: Explicit score deduction attribution and anti-duplicate penalty tracking.
+    Enforces that the same defect cannot trigger multiple deductions across criteria
+    unless an independent cross-criterion justification is provided.
+    """
+    __tablename__ = "evaluation_deduction_attributions"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    evaluation_result_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("evaluation_results.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
+    submission_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("submissions.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    criterion_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("rubric_criteria.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    issue_description: Mapped[str] = mapped_column(String(500), nullable=False)
+    defect_severity: Mapped[str] = mapped_column(String(32), nullable=False, default="MINOR")
+    relevance_explanation: Mapped[str] = mapped_column(Text, nullable=False)
+    overlap_group_id: Mapped[Optional[str]] = mapped_column(String(100), nullable=True, index=True)
+    is_primary_attribution: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    cross_criterion_justification: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    deduction_points: Mapped[Decimal] = mapped_column(Numeric(5, 2), nullable=False, default=Decimal("0.00"))
+    proportionality_rationale: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    evaluation_result: Mapped[Optional["EvaluationResult"]] = relationship(
+        "EvaluationResult", back_populates="deductions"
+    )
+    submission: Mapped["Submission"] = relationship("Submission")
+    criterion: Mapped["RubricCriterion"] = relationship("RubricCriterion")
+
+
+class EvaluationCriterionAssessment(Base):
+    """
+    Subsystem F: Structured criterion assessment storing positive/negative findings,
+    missing evidence observations, requirement coverage, and score justifications.
+    """
+    __tablename__ = "evaluation_criterion_assessments"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    evaluation_result_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("evaluation_results.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
+    submission_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("submissions.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    criterion_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("rubric_criteria.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    policy_version: Mapped[str] = mapped_column(String(32), default="1.0.0", nullable=False)
+    evidence_strength: Mapped[str] = mapped_column(String(32), default="MODERATE", nullable=False)
+    raw_score_before_deductions: Mapped[Decimal] = mapped_column(Numeric(5, 2), nullable=False)
+    total_deductions: Mapped[Decimal] = mapped_column(Numeric(5, 2), default=Decimal("0.00"), nullable=False)
+    final_criterion_score: Mapped[Decimal] = mapped_column(Numeric(5, 2), nullable=False)
+    confidence: Mapped[Decimal] = mapped_column(Numeric(5, 2), default=Decimal("1.00"), nullable=False)
+    positive_findings: Mapped[List[str]] = mapped_column(JSONB, nullable=False, default=list)
+    negative_findings: Mapped[List[str]] = mapped_column(JSONB, nullable=False, default=list)
+    neutral_observations: Mapped[List[str]] = mapped_column(JSONB, nullable=False, default=list)
+    missing_evidence_observations: Mapped[List[str]] = mapped_column(JSONB, nullable=False, default=list)
+    unresolved_questions: Mapped[List[str]] = mapped_column(JSONB, nullable=False, default=list)
+    score_justification: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    evaluation_result: Mapped[Optional["EvaluationResult"]] = relationship(
+        "EvaluationResult", back_populates="assessments"
+    )
+    submission: Mapped["Submission"] = relationship("Submission")
+    criterion: Mapped["RubricCriterion"] = relationship("RubricCriterion")
+

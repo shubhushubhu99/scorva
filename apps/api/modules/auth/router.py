@@ -133,6 +133,9 @@ async def _issue_user_session(
     # Resolve deterministic routing destinations based on server-side roles
     routing = await resolve_user_routing(db, user)
     target_dest = validate_redirect_destination(redirect_url, routing)
+    if redirect_url in ("/participant", "/judge"):
+        target_dest = redirect_url
+        routing.default_destination = redirect_url
 
     return AuthSuccessResponse(
         mfa_required=False,
@@ -309,6 +312,33 @@ async def admin_login(
             db.add(new_mem)
             await db.flush()
 
+    # If judge supplied a judge access code, validate it before granting dashboard access
+    if req.judge_code and req.judge_code.strip():
+        from apps.api.modules.evaluations.models import HackathonJudge
+        from apps.api.modules.hackathons.models import Hackathon
+        clean_judge_code = req.judge_code.strip().upper()
+        stmt_judge = (
+            select(HackathonJudge, Hackathon)
+            .join(Hackathon, HackathonJudge.hackathon_id == Hackathon.id)
+            .where(func.upper(HackathonJudge.access_code) == clean_judge_code)
+        )
+        judge_res = (await db.execute(stmt_judge)).first()
+        if not judge_res:
+            raise AppException(
+                code="INVALID_JUDGE_CODE",
+                message="Invalid judge access code. Access to evaluation dashboard denied. Please contact your hackathon administrator.",
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                title="Invalid Judge Code",
+            )
+        judge_obj, hackathon_obj = judge_res
+        if judge_obj.user_id != user.id:
+            raise AppException(
+                code="JUDGE_CODE_MISMATCH",
+                message="This judge access code is not registered to your account.",
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                title="Judge Code Mismatch",
+            )
+
     # Multi-Factor Authentication check governed by centralized platform configuration
     effective_config = await resolve_effective_configuration(db)
     mfa_required = (effective_config.auth_mfa_enforced and user.platform_role is not None) or user.mfa_enabled
@@ -340,6 +370,12 @@ async def admin_login(
             challenge_token=challenge_token,
         )
 
+    effective_redirect = req.redirect_url
+    if req.team_code and req.team_code.strip():
+        effective_redirect = "/participant"
+    elif req.judge_code and req.judge_code.strip():
+        effective_redirect = "/judge"
+
     # MFA is not required: issue session directly
     return await _issue_user_session(
         user=user,
@@ -350,7 +386,7 @@ async def admin_login(
         correlation_id=correlation_id,
         auth_action="login_direct_success",
         auth_reason="Primary credentials verified",
-        redirect_url=req.redirect_url,
+        redirect_url=effective_redirect,
     )
 
 

@@ -223,6 +223,7 @@ class JudgeListItem(StrictBase):
     created_at: datetime
     user_email: str
     user_name: str
+    access_code: Optional[str] = None
 
 
 # ==========================================

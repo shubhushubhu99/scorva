@@ -15,6 +15,14 @@ from apps.api.middleware.proxy_headers import get_client_ip
 from apps.api.modules.audit.models import AuditOutcome
 from apps.api.modules.audit.service import record_audit_event
 from apps.api.modules.auth.schemas import UserResponse
+from apps.api.modules.evaluations.models import HackathonJudge
+from apps.api.modules.hackathons.models import Hackathon
+from apps.api.modules.organizations.models import (
+    MembershipStatus,
+    Organization,
+    OrganizationMembership,
+    OrgRole,
+)
 from apps.api.modules.rbac.models import PLATFORM_SCOPE_ID
 from apps.api.modules.rbac.service import (
     check_last_platform_owner_lockout,
@@ -57,7 +65,9 @@ async def list_users(
 
     if role:
         role_cleaned = role.strip().lower()
-        if role_cleaned == "none":
+        if role_cleaned == "judge":
+            filters.append(User.id.in_(select(HackathonJudge.user_id)))
+        elif role_cleaned == "none":
             filters.append(User.platform_role.is_(None))
         else:
             try:
@@ -95,6 +105,20 @@ async def list_users(
     result = await db.execute(stmt)
     users = result.scalars().all()
 
+    user_ids = [u.id for u in users]
+    judge_map = {}
+    if user_ids:
+        from apps.api.modules.evaluations.models import HackathonJudge
+        from apps.api.modules.hackathons.models import Hackathon
+        judge_stmt = (
+            select(HackathonJudge, Hackathon)
+            .join(Hackathon, HackathonJudge.hackathon_id == Hackathon.id)
+            .where(HackathonJudge.user_id.in_(user_ids))
+        )
+        judge_rows = (await db.execute(judge_stmt)).all()
+        for j, h in judge_rows:
+            judge_map[j.user_id] = (j.access_code, h.title)
+
     items = [
         UserResponse(
             id=str(u.id),
@@ -105,6 +129,8 @@ async def list_users(
             is_active=u.is_active,
             created_at=u.created_at,
             last_login_at=u.last_login_at,
+            judge_access_code=judge_map.get(u.id, (None, None))[0],
+            judge_hackathon_title=judge_map.get(u.id, (None, None))[1],
         )
         for u in users
     ]
@@ -164,9 +190,9 @@ async def create_user(
         mfa_enabled=False,
     )
     db.add(new_user)
+    await db.flush()
 
     if req.organization_id:
-        from apps.api.modules.organizations.models import Organization, OrganizationMembership, MembershipStatus, OrgRole
         org_stmt = select(Organization).where(Organization.id == req.organization_id, Organization.deleted_at.is_(None))
         org = (await db.execute(org_stmt)).scalar_one_or_none()
         if not org:
@@ -191,8 +217,40 @@ async def create_user(
             status=MembershipStatus.ACTIVE,
         )
         db.add(membership)
+        await db.flush()
 
-    role_desc = req.platform_role.value if req.platform_role else (req.org_role or "organizer")
+    judge_access_code = None
+    judge_hackathon_title = None
+    if req.hackathon_id or req.is_judge:
+        if not req.hackathon_id:
+            raise AppException(
+                code="HACKATHON_ID_REQUIRED",
+                message="Target hackathon is required when creating a judge account.",
+                status_code=status.HTTP_400_BAD_REQUEST,
+                title="Hackathon Required",
+            )
+        hack_stmt = select(Hackathon).where(Hackathon.id == req.hackathon_id, Hackathon.deleted_at.is_(None))
+        hack = (await db.execute(hack_stmt)).scalar_one_or_none()
+        if not hack:
+            raise AppException(
+                code="HACKATHON_NOT_FOUND",
+                message="Target hackathon event not found.",
+                status_code=status.HTTP_404_NOT_FOUND,
+                title="Hackathon Not Found",
+            )
+        judge_access_code = f"JDG-{uuid.uuid4().hex[:8].upper()}"
+        judge_hackathon_title = hack.title
+        judge_assignment = HackathonJudge(
+            id=uuid.uuid4(),
+            hackathon_id=hack.id,
+            user_id=user_id,
+            access_code=judge_access_code,
+            assigned_by_user_id=admin_user.id,
+        )
+        db.add(judge_assignment)
+        await db.flush()
+
+    role_desc = "judge" if judge_access_code else (req.platform_role.value if req.platform_role else (req.org_role or "organizer"))
     await record_audit_event(
         db=db,
         action="user_created",
@@ -203,7 +261,7 @@ async def create_user(
         actor_email=admin_user.email,
         actor_role=admin_user.platform_role.value if admin_user.platform_role else "none",
         reason=f"User {email_clean} created with role {role_desc}",
-        diff_payload={"email": email_clean, "role": role_desc},
+        diff_payload={"email": email_clean, "role": role_desc, "judge_code": judge_access_code},
         ip_address=client_ip,
         user_agent=user_agent,
         correlation_id=correlation_id,
@@ -221,6 +279,9 @@ async def create_user(
         is_active=new_user.is_active,
         created_at=new_user.created_at,
         last_login_at=new_user.last_login_at,
+        judge_access_code=judge_access_code,
+        judge_hackathon_title=judge_hackathon_title,
+        temporary_password=req.password,
     )
 
 

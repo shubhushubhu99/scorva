@@ -1552,6 +1552,7 @@ async def list_hackathon_judges(
             created_at=judge.created_at,
             user_email=u.email,
             user_name=u.full_name,
+            access_code=judge.access_code,
         )
         for judge, u in rows
     ]
@@ -1605,10 +1606,12 @@ async def assign_hackathon_judge(
             message=f"User '{user.email}' is already assigned as a judge for this hackathon.",
         )
 
+    code = f"JDG-{uuid.uuid4().hex[:8].upper()}"
     judge = HackathonJudge(
         hackathon_id=hackathon_id,
         user_id=user.id,
         assigned_by_user_id=actor_user_id,
+        access_code=code,
     )
     db.add(judge)
     await db.flush()
@@ -1624,7 +1627,7 @@ async def assign_hackathon_judge(
         actor_role=actor_role,
         organization_id=org_id,
         reason=f"Assigned user '{user.email}' as judge to hackathon",
-        diff_payload={"user_id": str(user.id), "email": user.email},
+        diff_payload={"user_id": str(user.id), "email": user.email, "access_code": code},
         ip_address=ip_address,
         user_agent=user_agent,
         correlation_id=correlation_id,
@@ -1638,6 +1641,7 @@ async def assign_hackathon_judge(
         created_at=judge.created_at,
         user_email=user.email,
         user_name=user.full_name,
+        access_code=judge.access_code,
     )
 
 

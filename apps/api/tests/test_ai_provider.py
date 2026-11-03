@@ -851,3 +851,91 @@ async def test_execute_evaluation_with_retry_format_error_retries_at_most_once()
     assert exc_info.value.error_code == "EVAL_PARSE_ERROR"
     # 1 initial call + 1 retry = 2 calls
     assert len(mock_client.calls) == 2
+
+
+def test_parse_explanations_with_explicit_headers():
+    """Verifies parse_explanations correctly extracts Quick and Detailed sections."""
+    from apps.api.modules.evaluations.output_validator import parse_explanations
+
+    raw = (
+        "Quick Summary:\n"
+        "The project provides a simple and clean login page.\n\n"
+        "Detailed Breakdown:\n"
+        "The code uses FastAPI and SQLAlchemy to authenticate users. It includes password hashing and checks for empty fields."
+    )
+    quick, detailed = parse_explanations(raw)
+    assert quick == "The project provides a simple and clean login page."
+    assert "FastAPI and SQLAlchemy" in detailed
+
+
+def test_parse_explanations_plain_text_derivation():
+    """Verifies parse_explanations derives quick and detailed from plain text."""
+    from apps.api.modules.evaluations.output_validator import parse_explanations
+
+    plain = "This is a clean and simple hackathon submission. It fulfills all requirements without complicated code."
+    quick, detailed = parse_explanations(plain)
+    assert quick.startswith("This is a clean and simple hackathon submission.")
+    assert detailed == plain
+
+
+def test_output_validator_dual_explanations_synthesis():
+    """Verifies AICriterionScorePayload and AIEvaluationOutputPayload handle dual explanations."""
+    from apps.api.modules.evaluations.output_validator import (
+        AIEvaluationOutputPayload,
+        AICriterionScorePayload,
+    )
+
+    crit_id = uuid.uuid4()
+    # 1. Provide only quick and detailed; rationale should be auto-synthesized
+    payload = AIEvaluationOutputPayload.model_validate({
+        "quick_summary": "Clean and simple weather app.",
+        "detailed_summary": "The application fetches weather data from an open API and displays current temperature clearly.",
+        "has_insufficient_evidence": False,
+        "criterion_scores": [
+            {
+                "criterion_id": str(crit_id),
+                "awarded_score": "9.00",
+                "confidence_score": "1.00",
+                "quick_explanation": "Simple code structure with clear functions.",
+                "detailed_explanation": "The repository contains well-commented functions and simple test files that pass cleanly.",
+                "evidence_status": "verified",
+                "evidence_references": [],
+            }
+        ],
+    })
+
+    assert payload.quick_summary == "Clean and simple weather app."
+    assert "Detailed Breakdown:" in payload.summary_assessment
+    assert payload.criterion_scores[0].quick_explanation == "Simple code structure with clear functions."
+    assert "Quick Summary:" in payload.criterion_scores[0].rationale
+
+
+def test_prompt_compiler_directives_for_simple_words_and_dual_explanations():
+    """Verifies that the compiled prompt contains directives for simple language and dual explanations."""
+    from apps.api.modules.evaluations.prompt_compiler import compile_evaluation_prompt
+    from apps.api.modules.evaluations.evidence_indexer import EvidenceIndex
+
+    index = EvidenceIndex()
+    criteria = [
+        {
+            "id": uuid.uuid4(),
+            "title": "Code Quality",
+            "description": "Readable code",
+            "min_score": Decimal("0.00"),
+            "max_score": Decimal("10.00"),
+            "evidence_requirements": "Source code",
+        }
+    ]
+
+    prompt = compile_evaluation_prompt(
+        rubric_criteria=criteria,
+        evidence_index=index,
+        submission_meta={"team_name": "TestTeam"},
+    )
+
+    assert "LANGUAGE SIMPLICITY (NO JARGON)" in prompt
+    assert "DUAL EXPLANATIONS (QUICK + DETAILED)" in prompt
+    assert "quick_explanation" in prompt
+    assert "detailed_explanation" in prompt
+    assert "quick_summary" in prompt
+    assert "detailed_summary" in prompt

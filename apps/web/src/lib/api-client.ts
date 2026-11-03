@@ -68,6 +68,7 @@ import {
   JudgeQueueItem,
   JudgeSubmissionReviewResponse,
   SaveJudgeReviewRequest,
+  RevertJudgeReviewRequest,
   SubmitJudgeReviewRequest,
   JudgeReviewDetail,
   OrganizerReviewProgressResponse,
@@ -96,6 +97,12 @@ import {
   AdminSupportTicketDetailResponse,
   AdminCreateSupportReplyRequest,
   AdminUpdateSupportTicketStatusRequest,
+  AdminJudgeItem,
+  AdminCreateJudgeRequest,
+  AIRoutingConfigRequest,
+  AIRoutingConfigResponse,
+  AIEndpointProbeResponse,
+  AIOperationsStatsResponse,
   RegistrationStatusResponse,
   ParticipantProjectRegistrationRequest,
   ProjectRegistrationSuccessResponse,
@@ -104,6 +111,7 @@ import {
   SaveParticipantPatResponse,
   ParticipantGitHubSettingsResponse,
   VerifyParticipantGitHubResponse,
+  OllamaRepoInspectionResponse,
 } from '@/types/api';
 
 const API_BASE_URL =
@@ -131,9 +139,13 @@ export class ApiClientError extends Error {
   }
 }
 
+export interface FetchApiOptions extends RequestInit {
+  timeoutMs?: number;
+}
+
 export async function fetchApi<T>(
   endpoint: string,
-  options: RequestInit = {}
+  options: FetchApiOptions = {}
 ): Promise<T> {
   const url = `${API_BASE_URL.replace(/\/$/, '')}/${endpoint.replace(/^\//, '')}`;
 
@@ -143,8 +155,9 @@ export async function fetchApi<T>(
     headers.set('Content-Type', 'application/json');
   }
 
+  const timeoutMs = options.timeoutMs ?? 30000; // default 30s timeout
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 10000); // 10s timeout
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
   const effectiveSignal = options.signal
     ? typeof AbortSignal.any === 'function'
@@ -212,7 +225,8 @@ export async function fetchApi<T>(
       if (options.signal?.aborted) {
         throw new ApiClientError('Request was aborted', 0, 'REQUEST_ABORTED');
       }
-      throw new ApiClientError('Request timed out after 10 seconds', 408, 'REQUEST_TIMEOUT');
+      const timeoutSec = Math.round((options.timeoutMs ?? 30000) / 1000);
+      throw new ApiClientError(`Request timed out after ${timeoutSec} seconds`, 408, 'REQUEST_TIMEOUT');
     }
 
     throw new ApiClientError(
@@ -242,7 +256,8 @@ export const api = {
     email: string,
     password: string,
     redirectUrl?: string,
-    teamCode?: string
+    teamCode?: string,
+    judgeCode?: string
   ): Promise<LoginResponse> => {
     return fetchApi<LoginResponse>('/api/v1/auth/login', {
       method: 'POST',
@@ -251,6 +266,7 @@ export const api = {
         password,
         redirect_url: redirectUrl,
         team_code: teamCode || undefined,
+        judge_code: judgeCode || undefined,
       }),
     });
   },
@@ -1295,6 +1311,45 @@ export const api = {
     );
   },
 
+  revertJudgeReview: async (
+    hackathonId: string,
+    submissionId: string,
+    data: RevertJudgeReviewRequest = { target_status: 'draft' }
+  ): Promise<JudgeSubmissionReviewResponse> => {
+    return fetchApi<JudgeSubmissionReviewResponse>(
+      `/api/v1/judge/hackathons/${hackathonId}/submissions/${submissionId}/review/revert`,
+      {
+        method: 'POST',
+        body: JSON.stringify(data),
+      }
+    );
+  },
+
+  inspectJudgeSubmissionRepo: async (
+    hackathonId: string,
+    submissionId: string,
+    forceRefresh: boolean = false
+  ): Promise<OllamaRepoInspectionResponse> => {
+    return fetchApi<OllamaRepoInspectionResponse>(
+      `/api/v1/judge/hackathons/${hackathonId}/submissions/${submissionId}/inspect-repo${forceRefresh ? '?force_refresh=true' : ''}`,
+      {
+        method: 'POST',
+        timeoutMs: 180000, // 3-minute timeout for deep neural codebase analysis
+      }
+    );
+  },
+
+  getJudgeSubmissionInspection: async (
+    hackathonId: string,
+    submissionId: string,
+    options?: RequestInit
+  ): Promise<OllamaRepoInspectionResponse | null> => {
+    return fetchApi<OllamaRepoInspectionResponse | null>(
+      `/api/v1/judge/hackathons/${hackathonId}/submissions/${submissionId}/inspect-repo`,
+      options
+    );
+  },
+
   getJudgeSubmissionTransparency: async (
     hackathonId: string,
     submissionId: string,
@@ -1636,5 +1691,158 @@ export const api = {
 
   getAdminSupportTicketAttachmentUrl: (ticketId: string): string => {
     return `${API_BASE_URL.replace(/\/$/, '')}/api/v1/admin/support/tickets/${encodeURIComponent(ticketId)}/attachment`;
+  },
+
+  getAdminJudges: async (
+    params?: { hackathon_id?: string; search?: string },
+    options?: RequestInit
+  ): Promise<AdminJudgeItem[]> => {
+    const query = new URLSearchParams();
+    if (params?.hackathon_id) query.set('hackathon_id', params.hackathon_id);
+    if (params?.search) query.set('search', params.search);
+    const qs = query.toString();
+    return fetchApi<AdminJudgeItem[]>(`/api/v1/admin/hackathons/judges${qs ? `?${qs}` : ''}`, options);
+  },
+
+  createAdminJudge: async (
+    hackathonId: string,
+    data: AdminCreateJudgeRequest
+  ): Promise<AdminJudgeItem> => {
+    return fetchApi<AdminJudgeItem>(
+      `/api/v1/admin/hackathons/${encodeURIComponent(hackathonId)}/judges`,
+      {
+        method: 'POST',
+        body: JSON.stringify(data),
+      }
+    );
+  },
+
+  deleteAdminJudge: async (
+    hackathonId: string,
+    judgeId: string
+  ): Promise<void> => {
+    return fetchApi<void>(
+      `/api/v1/admin/hackathons/${encodeURIComponent(hackathonId)}/judges/${encodeURIComponent(judgeId)}`,
+      {
+        method: 'DELETE',
+      }
+    );
+  },
+
+  getAIRoutingConfig: async (options?: RequestInit): Promise<AIRoutingConfigResponse> => {
+    return fetchApi<AIRoutingConfigResponse>('/api/v1/admin/ai-operations/routing', options);
+  },
+
+  updateAIRoutingConfig: async (data: AIRoutingConfigRequest): Promise<AIRoutingConfigResponse> => {
+    return fetchApi<AIRoutingConfigResponse>('/api/v1/admin/ai-operations/routing', {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    });
+  },
+
+  probeAIEndpoint: async (url: string): Promise<AIEndpointProbeResponse> => {
+    return fetchApi<AIEndpointProbeResponse>('/api/v1/admin/ai-operations/probe', {
+      method: 'POST',
+      body: JSON.stringify({ url }),
+    });
+  },
+
+  getAIOperationsStats: async (options?: RequestInit): Promise<AIOperationsStatsResponse> => {
+    return fetchApi<AIOperationsStatsResponse>('/api/v1/admin/ai-operations/stats', options);
+  },
+
+  // AI Operations Control Center Endpoints
+  getAIRuntimeOverview: async (options?: RequestInit): Promise<import('@/types/api').AIRuntimeOverviewResponse> => {
+    return fetchApi<import('@/types/api').AIRuntimeOverviewResponse>('/api/v1/admin/ai-operations/runtime', options);
+  },
+
+  updateAIRuntimeSettings: async (data: import('@/types/api').AIRuntimeSettingsUpdate): Promise<import('@/types/api').AIRuntimeOverviewResponse> => {
+    return fetchApi<import('@/types/api').AIRuntimeOverviewResponse>('/api/v1/admin/ai-operations/runtime', {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    });
+  },
+
+  discoverAIModels: async (forceRefresh: boolean = true): Promise<import('@/types/api').AIModelItem[]> => {
+    return fetchApi<import('@/types/api').AIModelItem[]>(`/api/v1/admin/ai-operations/runtime/discover?force_refresh=${forceRefresh}`, {
+      method: 'POST',
+    });
+  },
+
+  getAIModels: async (params?: { provider?: string; search?: string; enabled_only?: boolean }): Promise<import('@/types/api').AIModelItem[]> => {
+    const query = new URLSearchParams();
+    if (params?.provider) query.append('provider', params.provider);
+    if (params?.search) query.append('search', params.search);
+    if (params?.enabled_only !== undefined) query.append('enabled_only', String(params.enabled_only));
+    const qs = query.toString();
+    return fetchApi<import('@/types/api').AIModelItem[]>(`/api/v1/admin/ai-operations/models${qs ? `?${qs}` : ''}`);
+  },
+
+  updateAIModel: async (modelId: string, data: import('@/types/api').AIModelUpdatePayload): Promise<import('@/types/api').AIModelItem> => {
+    return fetchApi<import('@/types/api').AIModelItem>(`/api/v1/admin/ai-operations/models/${encodeURIComponent(modelId)}`, {
+      method: 'PATCH',
+      body: JSON.stringify(data),
+    });
+  },
+
+  testAIModel: async (data: import('@/types/api').PiModelTestRequest): Promise<import('@/types/api').PiModelTestResponse> => {
+    return fetchApi<import('@/types/api').PiModelTestResponse>('/api/v1/admin/ai-operations/models/test', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
+  },
+
+  switchAIDefaultModel: async (data: import('@/types/api').DefaultModelSwitchPayload): Promise<import('@/types/api').AIRuntimeOverviewResponse> => {
+    return fetchApi<import('@/types/api').AIRuntimeOverviewResponse>('/api/v1/admin/ai-operations/default-model', {
+      method: 'PATCH',
+      body: JSON.stringify(data),
+    });
+  },
+
+  getAITaskRoutings: async (): Promise<import('@/types/api').TaskRoutingAssignment[]> => {
+    return fetchApi<import('@/types/api').TaskRoutingAssignment[]>('/api/v1/admin/ai-operations/task-routing');
+  },
+
+  updateAITaskRouting: async (taskType: string, data: import('@/types/api').TaskRoutingUpdatePayload): Promise<import('@/types/api').TaskRoutingAssignment> => {
+    return fetchApi<import('@/types/api').TaskRoutingAssignment>(`/api/v1/admin/ai-operations/task-routing/${encodeURIComponent(taskType)}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    });
+  },
+
+  executeAIParallelTest: async (data: import('@/types/api').ParallelTaskExecutionRequest): Promise<import('@/types/api').ParallelTaskExecutionResponse> => {
+    return fetchApi<import('@/types/api').ParallelTaskExecutionResponse>('/api/v1/admin/ai-operations/execute-parallel', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
+  },
+
+  getAIExecutions: async (params?: {
+    page?: number;
+    page_size?: number;
+    task_type?: string;
+    provider?: string;
+    model?: string;
+    status?: string;
+    search?: string;
+  }): Promise<import('@/types/api').AIExecutionListResponse> => {
+    const query = new URLSearchParams();
+    if (params?.page) query.append('page', String(params.page));
+    if (params?.page_size) query.append('page_size', String(params.page_size));
+    if (params?.task_type) query.append('task_type', params.task_type);
+    if (params?.provider) query.append('provider', params.provider);
+    if (params?.model) query.append('model', params.model);
+    if (params?.status) query.append('status', params.status);
+    if (params?.search) query.append('search', params.search);
+    const qs = query.toString();
+    return fetchApi<import('@/types/api').AIExecutionListResponse>(`/api/v1/admin/ai-operations/executions${qs ? `?${qs}` : ''}`);
+  },
+
+  getAIExecutionDetail: async (executionId: string): Promise<import('@/types/api').AIExecutionRecordDetail> => {
+    return fetchApi<import('@/types/api').AIExecutionRecordDetail>(`/api/v1/admin/ai-operations/executions/${encodeURIComponent(executionId)}`);
+  },
+
+  getAIControlCenterStats: async (): Promise<import('@/types/api').AIOperationsControlCenterStats> => {
+    return fetchApi<import('@/types/api').AIOperationsControlCenterStats>('/api/v1/admin/ai-operations/control-center-stats');
   },
 };
